@@ -246,33 +246,80 @@ pnpm build
 
 ---
 
+## 💾 Database & Experiment Persistence (Phase 4)
+
+CloudFlow utilizes **PostgreSQL** with **Prisma ORM** for persistent storage of workload simulation experiments and multi-policy benchmark results.
+
+### 1. Database Schema (`prisma/schema.prisma`)
+The relational schema models experiments and comparative performance metrics:
+- **`Experiment`:** Stores workload configuration (`workloadType`, `requestCount`, `durationMinutes`, `slaLatencyThresholdMs`, `arrivalPattern`, `seed`), adaptive objective weights, and documented simulation assumptions.
+- **`PolicyResult`:** Stores comparative performance metrics for all five evaluated policies (`Latency-first`, `Cost-first`, `Carbon-first`, `Default`, `CloudFlow adaptive`), including `averageLatencyMs`, `p95LatencyMs`, `totalCostUSD`, `totalCarbonG`, `coldStartRatePercent`, `slaViolationRatePercent`, and `averageOverheadMs`.
+- **Relational Integrity:** Foreign key constraint with `onDelete: Cascade` ensures deleting an experiment automatically deletes all associated policy performance records.
+- **Indexes:** Indexed on `createdAt`, `workloadType`, and `experimentId` for efficient query and pagination performance.
+
+### 2. Local PostgreSQL Setup & Migrations
+1. **Set Environment Variable:**
+   Copy `.env.example` to `.env.local` and configure your PostgreSQL connection string:
+   ```env
+   DATABASE_URL="postgresql://<USER>:<PASSWORD>@localhost:5432/cloudflow?schema=public"
+   ```
+2. **Apply Migrations:**
+   ```bash
+   # Development migration
+   npx prisma migrate dev --name init
+
+   # Production migration deployment
+   npx prisma migrate deploy
+   ```
+3. **Generate Prisma Client:**
+   ```bash
+   npx prisma generate
+   ```
+
+### 3. Experiment API Endpoints
+- **`POST /api/experiments`:** Persists a completed experiment and all five policy results in a single transaction.
+- **`GET /api/experiments`:** Retrieves paginated experiment records with sorting (`sortBy=createdAt|name`, `order=asc|desc`, `page`, `limit`).
+- **`GET /api/experiments/:id`:** Fetches a single experiment record and all associated policy metrics (returns 404 if not found).
+- **`DELETE /api/experiments/:id`:** Deletes an experiment and cascades to its policy results (returns 404 if not found).
+- **`POST /api/simulate` (`saveExperiment: true`):** Optionally executes a fair 5-policy benchmark and persists the results atomically.
+
+---
+
 ## 🛠️ Architecture
 
 ```text
 app/
   api/
-    simulate/route.ts          # POST /api/simulate
+    simulate/route.ts          # POST /api/simulate (optional saveExperiment)
     schedule/evaluate/route.ts # POST /api/schedule/evaluate
-    experiments/route.ts       # GET /api/experiments
+    experiments/route.ts       # GET & POST /api/experiments
+    experiments/[id]/route.ts  # GET & DELETE /api/experiments/[id]
   layout.tsx                   # App Root Layout with CloudFlow branding
   page.tsx                     # Main Dashboard View
 lib/
   metrics/
     calculations.ts            # Mathematical formulations (cost, carbon, P95, SLA)
+  prisma.ts                    # Reusable Prisma client with global connection caching
   scheduler/
     adaptive-policy.ts         # CloudFlow Adaptive two-stage scheduling algorithm
     baseline-policies.ts       # Baseline policies (latency-first, cost-first, carbon-first, default)
   simulation/
-    defaults.ts                # Default multi-cloud regional serverless candidates
+    defaults.ts                # Default multi-cloud regional serverless candidates & assumptions
     engine.ts                  # Deterministic simulation execution engine
     workload.ts                # Deterministic PRNG and synthetic workload generator
+  storage/
+    experiments.ts             # Experiment persistence layer (Prisma transactional CRUD)
   types/
     scheduler.ts               # Core domain and API contracts
   validation/
     api-validator.ts           # Schema validation and request boundary limits
+prisma/
+  schema.prisma                # PostgreSQL Prisma schema
+  migrations/                  # SQL migration history
 tests/
   adaptive.test.ts             # Unit tests for CloudFlow adaptive policy & weight validation
   comparison.test.ts           # Multi-policy benchmark consistency & trade-off tests
+  experiments.test.ts          # CRUD, pagination, sorting, cascading delete, error handling
   metrics.test.ts              # Unit tests for metric formulas
   policies.test.ts             # Unit tests for baseline policy selection & SLA enforcement
   simulation.test.ts           # Deterministic reproducibility & distribution tests
@@ -281,7 +328,8 @@ tests/
 
 ---
 
-## 📄 Known Limitations (Phase 3)
+## 📄 Phase 4 Verification & Status
 
-- **Transient Storage:** Experiment runs are currently simulated in-memory and not stored permanently across restarts. Persistent storage will be implemented in Phase 4.
-- **Frontend Integration:** The UI dashboard currently displays mock demonstration values; Phase 5 will connect the dashboard forms, tables, and charts to live API results.
+- **Database Connectivity:** When `DATABASE_URL` is not configured or PostgreSQL is offline, CloudFlow safely returns HTTP 503 (`DATABASE_UNAVAILABLE`) with clear, diagnostic error messages rather than fabricating successful database persistence.
+- **Automated Test Coverage:** 46/46 unit and integration tests passing (`pnpm test`), verifying transactional creation, retrieval, pagination, sorting, deletion cascades, and database error handling using test doubles.
+- **TypeScript & Production Build:** Strict typechecking (`pnpm typecheck`) and Next.js production compilation (`pnpm build`) passing with zero errors.

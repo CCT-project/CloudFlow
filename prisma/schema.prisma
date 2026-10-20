@@ -1,0 +1,46 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Experiment {
+  id                    String         @id @default(uuid())
+  name                  String
+  createdAt             DateTime       @default(now())
+  workloadType          String
+  requestCount          Int
+  durationMinutes       Int
+  slaLatencyThresholdMs Float
+  arrivalPattern        String
+  seed                  Int
+  weights               Json
+  assumptions           Json
+  policyResults         PolicyResult[]
+
+  @@index([createdAt])
+  @@index([workloadType])
+  @@map("experiments")
+}
+
+model PolicyResult {
+  id                      String      @id @default(uuid())
+  experimentId            String
+  experiment              Experiment  @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  policy                  String
+  totalRequests           Int
+  averageLatencyMs        Float
+  p95LatencyMs            Float
+  totalCostUSD            Float
+  totalCarbonG            Float
+  coldStartRatePercent    Float
+  slaViolationRatePercent Float
+  averageOverheadMs       Float
+
+  @@unique([experimentId, policy])
+  @@index([experimentId])
+  @@map("policy_results")
+}

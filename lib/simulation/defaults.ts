@@ -70,3 +70,12 @@ export const DEFAULT_CANDIDATES: ServerlessCandidate[] = [
     isWarm: false,
   },
 ]
+
+export const DEFAULT_SIMULATION_ASSUMPTIONS = {
+  prng: 'Deterministic Mulberry32 algorithm with reproducible seed',
+  latencyModel: 'Base regional latency + synthetic duration + cold start delay (if cold) + bounded jitter (+/- 7.5ms)',
+  costModel: 'Calculated using durationMs * costPerMsUSD + standard invocation fee ($0.0000002)',
+  carbonModel: 'Calculated from 35W container power estimate * duration * regional grid carbon intensity (g CO2e/kWh)',
+  coldStartModel: '10-minute idle container expiration timeout based on request arrival timestamp intervals',
+  adaptivePolicyModel: 'Two-stage multi-objective optimization: Stage A filters for SLA feasibility; Stage B minimizes normalized score = alpha*Cost + beta*Carbon + gamma*Latency + delta*ColdRisk',
+}

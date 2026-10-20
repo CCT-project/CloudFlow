@@ -111,6 +111,8 @@ export interface SimulateRequestBody {
   candidates?: ServerlessCandidate[]
   seed?: number
   adaptiveWeights?: Partial<AdaptiveObjectiveWeights>
+  saveExperiment?: boolean
+  experimentName?: string
 }
 
 export interface SimulatedRequestTrace {
@@ -142,6 +144,8 @@ export interface SimulateResponseBody {
     adaptivePolicyModel?: string
   }
   sampleTraces: SimulatedRequestTrace[]
+  isSaved?: boolean
+  savedExperimentId?: string
 }
 
 export interface ScheduleEvaluateRequestBody {
@@ -171,5 +175,88 @@ export interface ApiErrorResponse {
     code: string
     message: string
     details?: string[]
+  }
+}
+
+export interface PersistedPolicyResult {
+  id?: string
+  experimentId?: string
+  policy: PolicyType
+  totalRequests: number
+  averageLatencyMs: number
+  p95LatencyMs: number
+  totalCostUSD: number
+  totalCarbonG: number
+  coldStartRatePercent: number
+  slaViolationRatePercent: number
+  averageOverheadMs: number
+}
+
+export interface ExperimentRecord {
+  id: string
+  name: string
+  createdAt: string
+  workloadType: WorkloadType
+  requestCount: number
+  durationMinutes: number
+  slaLatencyThresholdMs: number
+  arrivalPattern: ArrivalPattern
+  seed: number
+  weights: AdaptiveObjectiveWeights
+  assumptions: {
+    prng: string
+    latencyModel: string
+    costModel: string
+    carbonModel: string
+    coldStartModel: string
+    adaptivePolicyModel?: string
+  }
+  policyResults: PersistedPolicyResult[]
+}
+
+export interface CreateExperimentRequestBody {
+  name: string
+  workloadType?: WorkloadType
+  requestCount: number
+  durationMinutes?: number
+  slaLatencyThresholdMs: number
+  arrivalPattern?: ArrivalPattern
+  seed?: number
+  adaptiveWeights?: Partial<AdaptiveObjectiveWeights>
+  simulationAssumptions?: {
+    prng?: string
+    latencyModel?: string
+    costModel?: string
+    carbonModel?: string
+    coldStartModel?: string
+    adaptivePolicyModel?: string
+  }
+  policyResults: PersistedPolicyResult[]
+}
+
+export interface GetExperimentsResponseBody {
+  status: 'success'
+  data: {
+    experiments: ExperimentRecord[]
+    total: number
+    page: number
+    limit: number
+    totalPages: number
+    persistence: {
+      enabled: boolean
+      storageType: string
+      verified: boolean
+    }
+  }
+}
+
+export interface SingleExperimentResponseBody {
+  status: 'success'
+  data: {
+    experiment: ExperimentRecord
+    persistence: {
+      enabled: boolean
+      storageType: string
+    }
   }
 }
