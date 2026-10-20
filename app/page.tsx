@@ -1,5 +1,5 @@
-import { EcoServeApp } from '@/components/ecoserve-app'
+import { CloudFlowApp } from '@/components/ecoserve-app'
 
 export default function Page() {
-  return <EcoServeApp />
+  return <CloudFlowApp />
 }

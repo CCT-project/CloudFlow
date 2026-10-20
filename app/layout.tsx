@@ -3,9 +3,8 @@ import type { Metadata, Viewport } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'EcoServe — Adaptive Cloud Scheduling',
-  description: 'Research-ready serverless scheduling for cost, carbon, and SLA optimization.',
-  generator: 'v0.app',
+  title: 'CloudFlow: Adaptive Serverless Scheduling for Cost Efficiency, Carbon Awareness, and SLA Compliance',
+  description: 'Smarter Scheduling. Efficient Execution. Sustainable Cloud. Research-ready serverless scheduling framework.',
 }
 
 export const viewport: Viewport = {
