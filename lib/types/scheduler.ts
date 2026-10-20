@@ -84,3 +84,92 @@ export interface ExperimentRun {
   policySummaries: Record<PolicyType, PolicyPerformanceSummary>
   status: 'Pending' | 'Running' | 'Completed' | 'Failed'
 }
+
+export interface AdaptiveObjectiveWeights {
+  alpha: number // Cost weight
+  beta: number  // Carbon weight
+  gamma: number // Latency weight
+  delta: number // Cold-start risk weight
+}
+
+export const DEFAULT_ADAPTIVE_WEIGHTS: AdaptiveObjectiveWeights = {
+  alpha: 0.35,
+  beta: 0.25,
+  gamma: 0.25,
+  delta: 0.15,
+}
+
+export interface SimulateRequestBody {
+  workloadType?: WorkloadType
+  requestCount: number
+  durationMinutes?: number
+  slaLatencyThresholdMs: number
+  arrivalPattern?: ArrivalPattern
+  policy?: PolicyType
+  policiesToEvaluate?: PolicyType[]
+  compareAllPolicies?: boolean
+  candidates?: ServerlessCandidate[]
+  seed?: number
+  adaptiveWeights?: Partial<AdaptiveObjectiveWeights>
+}
+
+export interface SimulatedRequestTrace {
+  requestId: number
+  arrivalTimeMs: number
+  latencyMs: number
+  costUSD: number
+  carbonG: number
+  isColdStart: boolean
+  meetsSLA: boolean
+  selectedCandidateId: string
+  selectedCandidateName: string
+}
+
+export interface SimulateResponseBody {
+  status: 'success'
+  simulationId: string
+  timestamp: string
+  workload: WorkloadSimulationConfig
+  policy: PolicyType
+  summary: PolicyPerformanceSummary
+  policySummaries?: Partial<Record<PolicyType, PolicyPerformanceSummary>>
+  simulationAssumptions: {
+    prng: string
+    latencyModel: string
+    costModel: string
+    carbonModel: string
+    coldStartModel: string
+    adaptivePolicyModel?: string
+  }
+  sampleTraces: SimulatedRequestTrace[]
+}
+
+export interface ScheduleEvaluateRequestBody {
+  policy: PolicyType
+  slaLatencyThresholdMs: number
+  candidates: ServerlessCandidate[]
+  executionDurationMs?: number
+  isColdStart?: boolean
+  adaptiveWeights?: Partial<AdaptiveObjectiveWeights>
+}
+
+export interface ScheduleEvaluateResponseBody {
+  status: 'success'
+  policy: PolicyType
+  slaLatencyThresholdMs: number
+  isSlaSatisfied: boolean
+  selectedCandidate: ServerlessCandidate | null
+  decisionExplanation: string
+  evaluations: CandidateEvaluationResult[]
+  schedulingOverheadMs: number
+  weightsUsed?: AdaptiveObjectiveWeights
+}
+
+export interface ApiErrorResponse {
+  status: 'error'
+  error: {
+    code: string
+    message: string
+    details?: string[]
+  }
+}
