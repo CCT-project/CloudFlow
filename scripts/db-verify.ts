@@ -1,6 +1,10 @@
 import { PrismaClient } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
 
+interface TableRow {
+  tablename: string
+}
+
 export interface VerificationResult {
   success: boolean
   stage: string
@@ -44,13 +48,13 @@ export async function runDatabaseVerification(prismaClient?: PrismaClient): Prom
     // 2. Table Inspection
     try {
       // Check if experiments and policy_results tables exist
-      const tableCheck = await prisma.$queryRaw<Array<{ tablename: string }>>`
+      const tableCheck = await prisma.$queryRaw<TableRow[]>`
         SELECT tablename 
         FROM pg_tables 
         WHERE schemaname = 'public' 
           AND tablename IN ('experiments', 'policy_results');
       `
-      const tableNames = tableCheck.map((t) => t.tablename)
+      const tableNames = tableCheck.map((t: TableRow) => t.tablename)
       const hasExperiments = tableNames.includes('experiments')
       const hasPolicyResults = tableNames.includes('policy_results')
 

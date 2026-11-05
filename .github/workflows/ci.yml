@@ -53,6 +53,12 @@ jobs:
           DATABASE_URL: "postgresql://ci_dummy:ci_dummy@localhost:5432/cloudflow_ci?schema=public"
           DIRECT_URL: "postgresql://ci_dummy:ci_dummy@localhost:5432/cloudflow_ci?schema=public"
 
+      - name: Generate Prisma Client
+        run: pnpm exec prisma generate
+        env:
+          DATABASE_URL: "postgresql://ci_dummy:ci_dummy@localhost:5432/cloudflow_ci?schema=public"
+          DIRECT_URL: "postgresql://ci_dummy:ci_dummy@localhost:5432/cloudflow_ci?schema=public"
+
       - name: TypeScript Validation
         run: pnpm typecheck
 
@@ -90,6 +96,12 @@ jobs:
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma Client
+        run: pnpm exec prisma generate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
 
       # Executed only if explicitly selected in dispatch
       - name: Apply Safe Prisma Migrations (Forward Deploy Only, No Reset)
