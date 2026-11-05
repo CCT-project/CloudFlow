@@ -1,0 +1,105 @@
+name: CloudFlow CI & Controlled Database Verification
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  # Manual trigger with explicit opt-in for database operations
+  workflow_dispatch:
+    inputs:
+      run_db_migration:
+        description: 'Apply Prisma migration deploy to database (true/false)'
+        required: true
+        default: false
+        type: boolean
+      run_db_verification:
+        description: 'Run non-destructive db-verify test suite (true/false)'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  # Job 1: Always runs on push, pull_request, and workflow_dispatch
+  build-and-test:
+    name: Code Quality & Build Verification
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 12.3.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate Prisma Schema
+        run: pnpm exec prisma validate
+        env:
+          DATABASE_URL: "postgresql://ci_dummy:ci_dummy@localhost:5432/cloudflow_ci?schema=public"
+
+      - name: TypeScript Validation
+        run: pnpm typecheck
+
+      - name: Automated Unit & Integration Tests (55 Tests)
+        run: pnpm test
+
+      - name: Production Build Verification
+        run: pnpm build
+
+  # Job 2: Manually triggered, controlled database deployment & verification
+  # NEVER executed automatically on push or pull_request
+  controlled-database-deployment:
+    name: Controlled Production Database Operations
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Strictly require manual dispatch with explicit user inputs
+    if: "${{ github.event_name == 'workflow_dispatch' && (inputs.run_db_migration == true || inputs.run_db_verification == true) }}"
+    environment: production
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 12.3.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Executed only if explicitly selected in dispatch
+      - name: Apply Safe Prisma Migrations (Forward Deploy Only, No Reset)
+        if: "${{ inputs.run_db_migration == true }}"
+        run: pnpm db:deploy
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      # Executed only if explicitly selected in dispatch, and will halt if migration failed
+      - name: Run End-to-End Database Lifecycle Verification
+        if: "${{ inputs.run_db_verification == true }}"
+        run: node scripts/db-verify.ts
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
