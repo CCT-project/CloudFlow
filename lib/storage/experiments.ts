@@ -107,37 +107,62 @@ type ExperimentPrismaClient = PrismaClient | {
   }
 }
 
-let ownershipColumnsChecked = false
-let ownershipColumnsExist = false
+let defaultPrismaColumnsChecked = false
+let defaultPrismaColumnsExist = false
+const clientOwnershipCache = new WeakMap<object, boolean>()
 
 export async function areOwnershipColumnsAvailable(client: any = defaultPrisma): Promise<boolean> {
-  if (ownershipColumnsChecked) return ownershipColumnsExist
-  if (!process.env.DATABASE_URL) {
-    ownershipColumnsChecked = true
-    ownershipColumnsExist = false
-    return false
+  const isDefault = client === defaultPrisma || !client
+
+  if (isDefault) {
+    if (defaultPrismaColumnsChecked) return defaultPrismaColumnsExist
+    if (!process.env.DATABASE_URL) {
+      defaultPrismaColumnsChecked = true
+      defaultPrismaColumnsExist = false
+      return false
+    }
+  } else if (typeof client === 'object' && client !== null && clientOwnershipCache.has(client)) {
+    return clientOwnershipCache.get(client)!
   }
+
   try {
-    if ('$queryRaw' in client) {
+    if (client && typeof client === 'object' && '$queryRaw' in client && typeof client.$queryRaw === 'function') {
       const res = await client.$queryRaw`
         SELECT column_name FROM information_schema.columns 
         WHERE table_name = 'experiments' AND column_name = 'userId' LIMIT 1;
       `
-      ownershipColumnsExist = Array.isArray(res) && res.length > 0
-      ownershipColumnsChecked = true
-      return ownershipColumnsExist
+      const hasColumn =
+        Array.isArray(res) &&
+        res.some((r: any) => r && (r.column_name === 'userId' || r.COLUMN_NAME === 'userId'))
+
+      if (isDefault) {
+        defaultPrismaColumnsChecked = true
+        defaultPrismaColumnsExist = hasColumn
+      } else if (typeof client === 'object' && client !== null) {
+        clientOwnershipCache.set(client, hasColumn)
+      }
+      return hasColumn
     }
   } catch {
-    ownershipColumnsExist = false
-    ownershipColumnsChecked = true
+    if (isDefault) {
+      defaultPrismaColumnsChecked = true
+      defaultPrismaColumnsExist = false
+    } else if (typeof client === 'object' && client !== null) {
+      clientOwnershipCache.set(client, false)
+    }
     return false
+  }
+
+  if (isDefault) {
+    defaultPrismaColumnsChecked = true
+    defaultPrismaColumnsExist = false
   }
   return false
 }
 
 export function resetOwnershipColumnsCheck(): void {
-  ownershipColumnsChecked = false
-  ownershipColumnsExist = false
+  defaultPrismaColumnsChecked = false
+  defaultPrismaColumnsExist = false
 }
 
 function handlePrismaError(error: unknown): never {
