@@ -124,3 +124,17 @@ export function comparePolicies(policyResults: PersistedPolicyResult[]): PolicyM
     isBestSla: Math.abs(pr.slaViolationRatePercent - minSlaViolation) < 1e-9,
   }))
 }
+
+/**
+ * Calculates true pooled P95 tail latency across raw request-level latency observations.
+ * IMPORTANT RESEARCH AUDIT NOTE:
+ * Never calculate an overall P95 by averaging experiment-level P95 values.
+ * Percentiles are non-linear order statistics that cannot be combined with linear means.
+ * True aggregate P95 must be computed by ranking all pooled request observations.
+ */
+export function calculatePooledP95Latency(allRequestLatencies: number[]): number {
+  if (!allRequestLatencies || allRequestLatencies.length === 0) return 0
+  const sorted = [...allRequestLatencies].sort((a, b) => a - b)
+  const rankIndex = Math.max(0, Math.ceil(0.95 * sorted.length) - 1)
+  return Number(sorted[rankIndex].toFixed(2))
+}

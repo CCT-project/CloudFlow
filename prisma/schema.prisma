@@ -20,10 +20,15 @@ model Experiment {
   seed                  Int
   weights               Json
   assumptions           Json
+  userId                String?
+  isPublic              Boolean        @default(false)
+  user                  User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
   policyResults         PolicyResult[]
 
   @@index([createdAt])
   @@index([workloadType])
+  @@index([userId])
+  @@index([isPublic])
   @@map("experiments")
 }
 
@@ -44,4 +49,17 @@ model PolicyResult {
   @@unique([experimentId, policy])
   @@index([experimentId])
   @@map("policy_results")
+}
+
+model User {
+  id           String       @id @default(uuid())
+  email        String       @unique
+  name         String
+  passwordHash String
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  experiments  Experiment[]
+
+  @@index([email])
+  @@map("users")
 }

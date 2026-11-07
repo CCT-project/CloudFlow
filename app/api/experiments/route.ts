@@ -11,14 +11,29 @@ import {
   checkDatabaseConnectivity,
   DatabaseUnavailableError,
   DatabaseError,
+  GetExperimentsOptions,
 } from '@/lib/storage/experiments'
 import {
   validateCreateExperimentRequest,
   validateGetExperimentsQuery,
 } from '@/lib/validation/api-validator'
 import { DEFAULT_SIMULATION_ASSUMPTIONS } from '@/lib/simulation/defaults'
+import { getSessionUser } from '@/lib/auth/session'
 
 export async function GET(request: NextRequest) {
+  // Enforce server-side authentication
+  const user = await getSessionUser()
+  if (!user) {
+    const errorResponse: ApiErrorResponse = {
+      status: 'error',
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required. Please sign in to view experiment history.',
+      },
+    }
+    return NextResponse.json(errorResponse, { status: 401 })
+  }
+
   const url = new URL(request.url)
   const validation = validateGetExperimentsQuery(url.searchParams)
 
@@ -35,7 +50,16 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const result = await getExperiments(validation.data)
+    const queryOptions: GetExperimentsOptions = {
+      page: validation.data.page,
+      limit: validation.data.limit,
+      sortBy: validation.data.sortBy,
+      order: validation.data.order,
+      userId: user.id, // Authenticated owner filter from signed session
+      includePublic: validation.data.scope !== 'mine', // Includes public research benchmarks by default
+    }
+
+    const result = await getExperiments(queryOptions)
     const isAvailable = await checkDatabaseConnectivity()
 
     const response: GetExperimentsResponseBody = {
@@ -84,6 +108,19 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  // Enforce server-side authentication
+  const user = await getSessionUser()
+  if (!user) {
+    const errorResponse: ApiErrorResponse = {
+      status: 'error',
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required to create or save experiments.',
+      },
+    }
+    return NextResponse.json(errorResponse, { status: 401 })
+  }
+
   let body: unknown
   try {
     body = await request.json()
@@ -122,6 +159,8 @@ export async function POST(request: NextRequest) {
       slaLatencyThresholdMs: data.slaLatencyThresholdMs,
       arrivalPattern: data.arrivalPattern || 'Steady',
       seed: data.seed ?? 42,
+      userId: user.id, // Strictly bound to verified server session; ignores client payload tampering
+      isPublic: Boolean(data.isPublic),
       weights: {
         ...DEFAULT_ADAPTIVE_WEIGHTS,
         ...(data.adaptiveWeights || {}),

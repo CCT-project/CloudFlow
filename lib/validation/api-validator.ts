@@ -322,6 +322,7 @@ export interface ValidatedGetExperimentsQuery {
   limit: number
   sortBy: 'createdAt' | 'name'
   order: 'asc' | 'desc'
+  scope?: 'all' | 'mine'
 }
 
 /**
@@ -375,6 +376,17 @@ export function validateGetExperimentsQuery(
     }
   }
 
+  let scope: 'all' | 'mine' | undefined
+  const rawScope = searchParams.get('scope')
+  if (rawScope !== null) {
+    const lower = rawScope.toLowerCase()
+    if (lower === 'all' || lower === 'mine') {
+      scope = lower as 'all' | 'mine'
+    } else {
+      details.push("Query parameter 'scope' must be either 'all' or 'mine'.")
+    }
+  }
+
   if (details.length > 0) {
     return {
       isValid: false,
@@ -386,7 +398,7 @@ export function validateGetExperimentsQuery(
 
   return {
     isValid: true,
-    data: { page, limit, sortBy, order },
+    data: { page, limit, sortBy, order, scope },
   }
 }
 
@@ -452,6 +464,13 @@ export function validateCreateExperimentRequest(
   if (raw.arrivalPattern !== undefined && raw.arrivalPattern !== null) {
     if (!VALID_ARRIVAL_PATTERNS.includes(raw.arrivalPattern as ArrivalPattern)) {
       details.push(`Invalid arrivalPattern '${raw.arrivalPattern}'. Supported: ${VALID_ARRIVAL_PATTERNS.join(', ')}.`)
+    }
+  }
+
+  // isPublic Validation (if provided)
+  if (raw.isPublic !== undefined && raw.isPublic !== null) {
+    if (typeof raw.isPublic !== 'boolean') {
+      details.push("Field 'isPublic' must be a boolean.")
     }
   }
 
@@ -536,5 +555,111 @@ function validatePersistedPolicyResult(pr: unknown, prefix: string, details: str
   }
   if (p.averageOverheadMs !== undefined && (typeof p.averageOverheadMs !== 'number' || !Number.isFinite(p.averageOverheadMs) || p.averageOverheadMs < 0)) {
     details.push(`${prefix}.averageOverheadMs must be a non-negative finite number.`)
+  }
+}
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+export interface RegisterInput {
+  name: string
+  email: string
+  password: string
+}
+
+export function validateRegisterRequest(body: unknown): ValidationResult<RegisterInput> {
+  const details: string[] = []
+  if (!body || typeof body !== 'object') {
+    return {
+      isValid: false,
+      code: 'INVALID_PAYLOAD',
+      message: 'Request body must be a JSON object.',
+      details: ['Body is not an object.'],
+    }
+  }
+
+  const { name, email, password } = body as Record<string, unknown>
+
+  if (!name || typeof name !== 'string' || name.trim().length < 2) {
+    details.push('Full name is required and must be at least 2 characters.')
+  } else if (name.trim().length > 100) {
+    details.push('Full name must not exceed 100 characters.')
+  }
+
+  if (!email || typeof email !== 'string' || !EMAIL_REGEX.test(email.trim())) {
+    details.push('A valid email address is required.')
+  } else if (email.trim().length > 255) {
+    details.push('Email address must not exceed 255 characters.')
+  }
+
+  if (!password || typeof password !== 'string' || password.length < 8) {
+    details.push('Password must be at least 8 characters long.')
+  } else if (password.length > 128) {
+    details.push('Password must not exceed 128 characters.')
+  }
+
+  if (details.length > 0) {
+    return {
+      isValid: false,
+      code: 'VALIDATION_FAILED',
+      message: details[0],
+      details,
+    }
+  }
+
+  return {
+    isValid: true,
+    data: {
+      name: (name as string).trim(),
+      email: (email as string).trim().toLowerCase(),
+      password: password as string,
+    },
+  }
+}
+
+export interface LoginInput {
+  email: string
+  password: string
+}
+
+export function validateLoginRequest(body: unknown): ValidationResult<LoginInput> {
+  const details: string[] = []
+  if (!body || typeof body !== 'object') {
+    return {
+      isValid: false,
+      code: 'INVALID_PAYLOAD',
+      message: 'Request body must be a JSON object.',
+      details: ['Body is not an object.'],
+    }
+  }
+
+  const { email, password } = body as Record<string, unknown>
+
+  if (!email || typeof email !== 'string' || !EMAIL_REGEX.test(email.trim())) {
+    details.push('A valid email address is required.')
+  } else if (email.trim().length > 255) {
+    details.push('Email address must not exceed 255 characters.')
+  }
+
+  if (!password || typeof password !== 'string' || password.length === 0) {
+    details.push('Password is required.')
+  } else if (password.length > 128) {
+    details.push('Password must not exceed 128 characters.')
+  }
+
+  if (details.length > 0) {
+    return {
+      isValid: false,
+      code: 'VALIDATION_FAILED',
+      message: details[0],
+      details,
+    }
+  }
+
+  return {
+    isValid: true,
+    data: {
+      email: (email as string).trim().toLowerCase(),
+      password: password as string,
+    },
   }
 }

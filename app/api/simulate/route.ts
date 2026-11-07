@@ -12,6 +12,7 @@ import {
   DatabaseUnavailableError,
   DatabaseError,
 } from '@/lib/storage/experiments'
+import { getSessionUser } from '@/lib/auth/session'
 
 export async function POST(request: NextRequest) {
   let body: unknown
@@ -74,6 +75,8 @@ export async function POST(request: NextRequest) {
         }
       })
 
+      const user = await getSessionUser()
+
       const saved = await createExperiment({
         name: expName,
         workloadType: result.workload.workloadType,
@@ -82,6 +85,8 @@ export async function POST(request: NextRequest) {
         slaLatencyThresholdMs: result.workload.slaLatencyThresholdMs,
         arrivalPattern: result.workload.arrivalPattern,
         seed: reqData.seed ?? 4242,
+        userId: user ? user.id : null,
+        isPublic: false,
         weights: {
           ...DEFAULT_ADAPTIVE_WEIGHTS,
           ...(reqData.adaptiveWeights || {}),

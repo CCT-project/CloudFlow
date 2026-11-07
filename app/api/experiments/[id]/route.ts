@@ -8,14 +8,28 @@ import {
   deleteExperiment,
   DatabaseUnavailableError,
   NotFoundError,
+  ForbiddenError,
   DatabaseError,
 } from '@/lib/storage/experiments'
+import { getSessionUser } from '@/lib/auth/session'
 
 interface RouteParams {
   params: Promise<{ id: string }>
 }
 
 export async function GET(_request: NextRequest, { params }: RouteParams) {
+  const user = await getSessionUser()
+  if (!user) {
+    const errorResponse: ApiErrorResponse = {
+      status: 'error',
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required to view experiment details.',
+      },
+    }
+    return NextResponse.json(errorResponse, { status: 401 })
+  }
+
   const { id } = await params
 
   if (!id || typeof id !== 'string' || id.trim().length === 0) {
@@ -30,7 +44,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
   }
 
   try {
-    const experiment = await getExperimentById(id)
+    const experiment = await getExperimentById(id, user.id)
 
     const response: SingleExperimentResponseBody = {
       status: 'success',
@@ -45,6 +59,17 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json(response, { status: 200 })
   } catch (err: unknown) {
+    if (err instanceof ForbiddenError) {
+      const errorResponse: ApiErrorResponse = {
+        status: 'error',
+        error: {
+          code: 'FORBIDDEN',
+          message: err.message,
+        },
+      }
+      return NextResponse.json(errorResponse, { status: 403 })
+    }
+
     if (err instanceof NotFoundError) {
       const errorResponse: ApiErrorResponse = {
         status: 'error',
@@ -84,6 +109,18 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 }
 
 export async function DELETE(_request: NextRequest, { params }: RouteParams) {
+  const user = await getSessionUser()
+  if (!user) {
+    const errorResponse: ApiErrorResponse = {
+      status: 'error',
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required to delete experiments.',
+      },
+    }
+    return NextResponse.json(errorResponse, { status: 401 })
+  }
+
   const { id } = await params
 
   if (!id || typeof id !== 'string' || id.trim().length === 0) {
@@ -98,7 +135,7 @@ export async function DELETE(_request: NextRequest, { params }: RouteParams) {
   }
 
   try {
-    const result = await deleteExperiment(id)
+    const result = await deleteExperiment(id, user.id)
 
     return NextResponse.json(
       {
@@ -108,6 +145,17 @@ export async function DELETE(_request: NextRequest, { params }: RouteParams) {
       { status: 200 }
     )
   } catch (err: unknown) {
+    if (err instanceof ForbiddenError) {
+      const errorResponse: ApiErrorResponse = {
+        status: 'error',
+        error: {
+          code: 'FORBIDDEN',
+          message: err.message,
+        },
+      }
+      return NextResponse.json(errorResponse, { status: 403 })
+    }
+
     if (err instanceof NotFoundError) {
       const errorResponse: ApiErrorResponse = {
         status: 'error',

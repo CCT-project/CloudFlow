@@ -23,3 +23,5 @@ node_modules
 *.tsbuildinfo
 .DS_Store
 *.log
+data/
+.data/

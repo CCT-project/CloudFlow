@@ -34,6 +34,15 @@ export class NotFoundError extends Error {
   }
 }
 
+export class ForbiddenError extends Error {
+  code: string
+  constructor(message: string = 'You do not have permission to access or modify this experiment.') {
+    super(message)
+    this.name = 'ForbiddenError'
+    this.code = 'FORBIDDEN'
+  }
+}
+
 export interface CreateExperimentStorageInput {
   name: string
   workloadType: WorkloadType
@@ -51,6 +60,8 @@ export interface CreateExperimentStorageInput {
     coldStartModel: string
     adaptivePolicyModel?: string
   }
+  userId?: string | null
+  isPublic?: boolean
   policyResults: Array<{
     policy: PolicyType
     totalRequests: number
@@ -69,6 +80,8 @@ export interface GetExperimentsOptions {
   limit?: number
   sortBy?: 'createdAt' | 'name'
   order?: 'asc' | 'desc'
+  userId?: string
+  includePublic?: boolean
 }
 
 export interface GetExperimentsResult {
@@ -94,8 +107,41 @@ type ExperimentPrismaClient = PrismaClient | {
   }
 }
 
+let ownershipColumnsChecked = false
+let ownershipColumnsExist = false
+
+export async function areOwnershipColumnsAvailable(client: any = defaultPrisma): Promise<boolean> {
+  if (ownershipColumnsChecked) return ownershipColumnsExist
+  if (!process.env.DATABASE_URL) {
+    ownershipColumnsChecked = true
+    ownershipColumnsExist = false
+    return false
+  }
+  try {
+    if ('$queryRaw' in client) {
+      const res = await client.$queryRaw`
+        SELECT column_name FROM information_schema.columns 
+        WHERE table_name = 'experiments' AND column_name = 'userId' LIMIT 1;
+      `
+      ownershipColumnsExist = Array.isArray(res) && res.length > 0
+      ownershipColumnsChecked = true
+      return ownershipColumnsExist
+    }
+  } catch {
+    ownershipColumnsExist = false
+    ownershipColumnsChecked = true
+    return false
+  }
+  return false
+}
+
+export function resetOwnershipColumnsCheck(): void {
+  ownershipColumnsChecked = false
+  ownershipColumnsExist = false
+}
+
 function handlePrismaError(error: unknown): never {
-  if (error instanceof NotFoundError || error instanceof DatabaseError) {
+  if (error instanceof NotFoundError || error instanceof ForbiddenError || error instanceof DatabaseError) {
     throw error
   }
   const err = error as { code?: string; message?: string }
@@ -133,6 +179,8 @@ function formatExperimentRecord(raw: any): ExperimentRecord {
     seed: raw.seed,
     weights: raw.weights as AdaptiveObjectiveWeights,
     assumptions: raw.assumptions as ExperimentRecord['assumptions'],
+    userId: raw.userId ?? null,
+    isPublic: Boolean(raw.isPublic),
     policyResults: (raw.policyResults || []).map((p: any) => ({
       id: p.id,
       experimentId: p.experimentId,
@@ -169,32 +217,41 @@ export async function createExperiment(
   client: ExperimentPrismaClient = defaultPrisma
 ): Promise<ExperimentRecord> {
   try {
+    const hasColumns = await areOwnershipColumnsAvailable(client)
+
+    const experimentData: Record<string, any> = {
+      name: input.name,
+      workloadType: input.workloadType,
+      requestCount: input.requestCount,
+      durationMinutes: input.durationMinutes,
+      slaLatencyThresholdMs: input.slaLatencyThresholdMs,
+      arrivalPattern: input.arrivalPattern,
+      seed: input.seed,
+      weights: input.weights as any,
+      assumptions: input.assumptions as any,
+      policyResults: {
+        create: input.policyResults.map((pr) => ({
+          policy: pr.policy,
+          totalRequests: pr.totalRequests,
+          averageLatencyMs: pr.averageLatencyMs,
+          p95LatencyMs: pr.p95LatencyMs,
+          totalCostUSD: pr.totalCostUSD,
+          totalCarbonG: pr.totalCarbonG,
+          coldStartRatePercent: pr.coldStartRatePercent,
+          slaViolationRatePercent: pr.slaViolationRatePercent,
+          averageOverheadMs: pr.averageOverheadMs,
+        })),
+      },
+    }
+
+    if (hasColumns) {
+      experimentData.userId = input.userId ?? null
+      experimentData.isPublic = Boolean(input.isPublic)
+    }
+
     const created = await (client as any).$transaction(async (tx: any) => {
       const exp = await tx.experiment.create({
-        data: {
-          name: input.name,
-          workloadType: input.workloadType,
-          requestCount: input.requestCount,
-          durationMinutes: input.durationMinutes,
-          slaLatencyThresholdMs: input.slaLatencyThresholdMs,
-          arrivalPattern: input.arrivalPattern,
-          seed: input.seed,
-          weights: input.weights as any,
-          assumptions: input.assumptions as any,
-          policyResults: {
-            create: input.policyResults.map((pr) => ({
-              policy: pr.policy,
-              totalRequests: pr.totalRequests,
-              averageLatencyMs: pr.averageLatencyMs,
-              p95LatencyMs: pr.p95LatencyMs,
-              totalCostUSD: pr.totalCostUSD,
-              totalCarbonG: pr.totalCarbonG,
-              coldStartRatePercent: pr.coldStartRatePercent,
-              slaViolationRatePercent: pr.slaViolationRatePercent,
-              averageOverheadMs: pr.averageOverheadMs,
-            })),
-          },
-        },
+        data: experimentData,
         include: {
           policyResults: true,
         },
@@ -202,7 +259,13 @@ export async function createExperiment(
       return exp
     })
 
-    return formatExperimentRecord(created)
+    const formatted = formatExperimentRecord(created)
+    // If running against pre-migration DB, preserve input's ownership attributes in return value
+    if (!hasColumns) {
+      formatted.userId = input.userId ?? null
+      formatted.isPublic = Boolean(input.isPublic)
+    }
+    return formatted
   } catch (error) {
     return handlePrismaError(error)
   }
@@ -219,9 +282,38 @@ export async function getExperiments(
   const skip = (page - 1) * limit
 
   try {
+    const hasColumns = await areOwnershipColumnsAvailable(client)
+
+    let where: Record<string, any> | undefined = undefined
+
+    if (hasColumns) {
+      if (options.userId) {
+        if (options.includePublic === false) {
+          where = { userId: options.userId }
+        } else {
+          where = {
+            OR: [
+              { userId: options.userId },
+              { isPublic: true },
+              { userId: null }, // Preserved legacy baseline benchmarks
+            ],
+          }
+        }
+      } else {
+        // Unauthenticated or public listing: only public or legacy
+        where = {
+          OR: [
+            { isPublic: true },
+            { userId: null },
+          ],
+        }
+      }
+    }
+
     const [total, items] = await Promise.all([
-      client.experiment.count(),
+      client.experiment.count(where ? { where } : undefined),
       client.experiment.findMany({
+        where,
         skip,
         take: limit,
         orderBy: { [sortBy]: order },
@@ -247,11 +339,18 @@ export async function getExperiments(
 
 export async function getExperimentById(
   id: string,
-  client: ExperimentPrismaClient = defaultPrisma
+  userIdOrClient?: string | ExperimentPrismaClient,
+  optionalClient?: ExperimentPrismaClient
 ): Promise<ExperimentRecord> {
   if (!id || typeof id !== 'string') {
     throw new NotFoundError('Invalid experiment ID.')
   }
+
+  const userId = typeof userIdOrClient === 'string' ? userIdOrClient : undefined
+  const client =
+    typeof userIdOrClient === 'object' && userIdOrClient !== null
+      ? (userIdOrClient as ExperimentPrismaClient)
+      : (optionalClient || defaultPrisma)
 
   try {
     const exp = await client.experiment.findUnique({
@@ -265,6 +364,16 @@ export async function getExperimentById(
       throw new NotFoundError(`Experiment with ID '${id}' was not found.`)
     }
 
+    // Ownership & Access Control Validation
+    const isOwner = Boolean(userId && exp.userId && exp.userId === userId)
+    const isPublic = Boolean(exp.isPublic)
+    const isLegacyUnassigned = exp.userId === null || exp.userId === undefined
+
+    // Private experiments can only be accessed by their owner
+    if (!isOwner && !isPublic && !isLegacyUnassigned) {
+      throw new ForbiddenError('You do not have permission to view this private experiment.')
+    }
+
     return formatExperimentRecord(exp)
   } catch (error) {
     return handlePrismaError(error)
@@ -273,13 +382,41 @@ export async function getExperimentById(
 
 export async function deleteExperiment(
   id: string,
-  client: ExperimentPrismaClient = defaultPrisma
+  userIdOrClient?: string | ExperimentPrismaClient,
+  optionalClient?: ExperimentPrismaClient
 ): Promise<{ id: string; deleted: boolean }> {
   if (!id || typeof id !== 'string') {
     throw new NotFoundError('Invalid experiment ID.')
   }
 
+  const userId = typeof userIdOrClient === 'string' ? userIdOrClient : undefined
+  const client =
+    typeof userIdOrClient === 'object' && userIdOrClient !== null
+      ? (userIdOrClient as ExperimentPrismaClient)
+      : (optionalClient || defaultPrisma)
+
   try {
+    const exp = await client.experiment.findUnique({
+      where: { id },
+    })
+
+    if (!exp) {
+      throw new NotFoundError(`Experiment with ID '${id}' was not found.`)
+    }
+
+    // If userId was provided, enforce ownership rules
+    if (userId) {
+      // System and legacy unassigned experiments cannot be deleted by users
+      if (exp.userId === null || exp.userId === undefined) {
+        throw new ForbiddenError('System and legacy benchmark experiments cannot be deleted.')
+      }
+
+      // Only the verified owner can delete their private or public experiment
+      if (exp.userId !== userId) {
+        throw new ForbiddenError('You do not have permission to delete this experiment.')
+      }
+    }
+
     await client.experiment.delete({
       where: { id },
     })

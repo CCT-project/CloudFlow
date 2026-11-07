@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import type { ExperimentRecord, PersistedPolicyResult } from '../lib/types/scheduler.ts'
-import { calculateAggregateMetrics, comparePolicies } from '../lib/metrics/aggregation.ts'
+import { calculateAggregateMetrics, calculatePooledP95Latency, comparePolicies } from '../lib/metrics/aggregation.ts'
 import { escapeCSVField, generateExperimentCSV, generateExperimentPDFDoc } from '../lib/reports/export.ts'
 
 const samplePolicyResults: PersistedPolicyResult[] = [
@@ -192,4 +192,23 @@ test('Reporting: generateExperimentPDFDoc generates a valid jsPDF document', () 
   assert.ok(doc)
   const output = doc.output('datauristring')
   assert.ok(output.startsWith('data:application/pdf'))
+})
+
+test('Analytics: calculatePooledP95Latency accurately calculates P95 across raw request-level observations', () => {
+  // Empty input returns 0
+  assert.equal(calculatePooledP95Latency([]), 0)
+
+  // 100 observations from 1 to 100
+  const latencies = Array.from({ length: 100 }, (_, i) => i + 1)
+  // 95th percentile should be 95
+  assert.equal(calculatePooledP95Latency(latencies), 95.0)
+
+  // Non-linear proof: 2 experiments with P95s 100 and 200 do NOT necessarily have combined P95 of 150
+  const batchA = Array.from({ length: 90 }, () => 50).concat(Array.from({ length: 10 }, () => 100))
+  const batchB = Array.from({ length: 90 }, () => 180).concat(Array.from({ length: 10 }, () => 200))
+  const pooled = [...batchA, ...batchB]
+  const pooledP95 = calculatePooledP95Latency(pooled)
+  // Pooled P95 is 196.2, NOT (100+200)/2 = 150. Proves linear averaging of percentiles is mathematically invalid!
+  assert.notEqual(pooledP95, (100 + 200) / 2)
+  assert.ok(pooledP95 >= 180)
 })

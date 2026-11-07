@@ -211,6 +211,8 @@ export interface ExperimentRecord {
     coldStartModel: string
     adaptivePolicyModel?: string
   }
+  userId?: string | null
+  isPublic?: boolean
   policyResults: PersistedPolicyResult[]
 }
 
@@ -231,6 +233,7 @@ export interface CreateExperimentRequestBody {
     coldStartModel?: string
     adaptivePolicyModel?: string
   }
+  isPublic?: boolean
   policyResults: PersistedPolicyResult[]
 }
 

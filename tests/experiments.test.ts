@@ -52,6 +52,8 @@ function createMockPrismaClient() {
           seed: args.data.seed,
           weights: args.data.weights,
           assumptions: args.data.assumptions,
+          userId: args.data.userId ?? null,
+          isPublic: Boolean(args.data.isPublic),
           policyResults: [] as any[],
         }
 
@@ -78,13 +80,45 @@ function createMockPrismaClient() {
         experiments.push(record)
         return record
       },
-      count: async () => experiments.length,
+      count: async (args?: any) => {
+        if (args?.where) {
+          let filtered = experiments
+          if (args.where.userId) {
+            filtered = filtered.filter((e) => e.userId === args.where.userId)
+          } else if (args.where.OR) {
+            filtered = filtered.filter((e) => {
+              return args.where.OR.some((cond: any) => {
+                if (cond.userId !== undefined && cond.userId === e.userId) return true
+                if (cond.isPublic === true && e.isPublic === true) return true
+                if (cond.userId === null && (e.userId === null || e.userId === undefined)) return true
+                return false
+              })
+            })
+          }
+          return filtered.length
+        }
+        return experiments.length
+      },
       findMany: async (args: any) => {
         const { skip = 0, take = 10, orderBy = { createdAt: 'desc' } } = args
         const sortKey = Object.keys(orderBy)[0] as 'createdAt' | 'name'
         const direction = orderBy[sortKey] === 'asc' ? 1 : -1
 
-        const sorted = [...experiments].sort((a, b) => {
+        let filtered = experiments
+        if (args.where?.userId) {
+          filtered = filtered.filter((e) => e.userId === args.where.userId)
+        } else if (args.where?.OR) {
+          filtered = filtered.filter((e) => {
+            return args.where.OR.some((cond: any) => {
+              if (cond.userId !== undefined && cond.userId === e.userId) return true
+              if (cond.isPublic === true && e.isPublic === true) return true
+              if (cond.userId === null && (e.userId === null || e.userId === undefined)) return true
+              return false
+            })
+          })
+        }
+
+        const sorted = [...filtered].sort((a, b) => {
           if (a[sortKey] < b[sortKey]) return -1 * direction
           if (a[sortKey] > b[sortKey]) return 1 * direction
           return 0

@@ -21,6 +21,7 @@ import {
   Gauge,
   Info,
   Leaf,
+  LogOut,
   Menu,
   Play,
   RefreshCw,
@@ -30,9 +31,13 @@ import {
   SlidersHorizontal,
   Sparkles,
   Trash2,
+  User,
   X,
   Zap,
 } from 'lucide-react'
+import { AuthModal, UserSession } from '@/components/auth-modal'
+import { MethodologyView } from '@/components/methodology-view'
+import { ResearchView } from '@/components/research-view'
 import {
   Area,
   AreaChart,
@@ -247,10 +252,28 @@ function ProductPreview() {
   )
 }
 
-function Landing({ onExplore }: { onExplore: () => void }) {
+function Landing({
+  onExplore,
+  onGetStarted,
+  onOpenMethodology,
+  onOpenResearch,
+  onOpenAuth,
+  user,
+  onLogout,
+}: {
+  onExplore: () => void
+  onGetStarted: () => void
+  onOpenMethodology: () => void
+  onOpenResearch: () => void
+  onOpenAuth: (mode: 'signin' | 'register') => void
+  user: UserSession | null
+  onLogout: () => void
+}) {
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+
   return (
     <div className="min-h-screen bg-[#f8faf9] text-slate-950">
-      <header className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5 lg:px-10">
+      <header className="relative mx-auto flex max-w-7xl items-center justify-between px-6 py-5 lg:px-10">
         <Logo />
         <nav className="hidden items-center gap-8 text-sm text-slate-500 md:flex">
           <a href="#product" className="transition hover:text-slate-950">
@@ -259,22 +282,135 @@ function Landing({ onExplore }: { onExplore: () => void }) {
           <a href="#features" className="transition hover:text-slate-950">
             Features
           </a>
-          <a href="#methodology" className="transition hover:text-slate-950">
+          <button
+            onClick={onOpenMethodology}
+            className="transition hover:text-slate-950 font-normal text-slate-500"
+          >
             Methodology
-          </a>
-          <a href="#research" className="transition hover:text-slate-950">
+          </button>
+          <button
+            onClick={onOpenResearch}
+            className="transition hover:text-slate-950 font-normal text-slate-500"
+          >
             Research
-          </a>
+          </button>
         </nav>
         <div className="flex items-center gap-3">
-          <button className="hidden text-sm font-medium text-slate-600 sm:block">Sign in</button>
-          <Button onClick={onExplore} className="rounded-xl bg-slate-950 px-4 text-sm text-white hover:bg-slate-800">
-            Get started <ArrowRight data-icon="inline-end" />
+          {user ? (
+            <div className="hidden sm:flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-800 border border-emerald-200">
+                <User size={12} /> {user.name}
+              </span>
+              <button
+                onClick={onLogout}
+                className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-500 hover:bg-rose-50 hover:text-rose-600 transition"
+                title="Sign out"
+              >
+                <LogOut size={13} /> Sign out
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => onOpenAuth('signin')}
+              className="hidden text-sm font-medium text-slate-600 hover:text-slate-950 sm:block transition"
+            >
+              Sign in
+            </button>
+          )}
+          <Button
+            onClick={onGetStarted}
+            className="hidden sm:inline-flex rounded-xl bg-slate-950 px-4 text-sm text-white hover:bg-slate-800"
+          >
+            {user ? 'Open Dashboard' : 'Get started'} <ArrowRight data-icon="inline-end" />
           </Button>
+
+          {/* Mobile Menu Button */}
+          <button
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            className="grid size-9 place-items-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-100 md:hidden"
+            aria-label="Toggle navigation menu"
+          >
+            {mobileMenuOpen ? <X size={18} /> : <Menu size={18} />}
+          </button>
         </div>
+
+        {/* Responsive Mobile Drawer */}
+        {mobileMenuOpen && (
+          <div className="absolute left-0 right-0 top-full z-40 border-b border-slate-200 bg-white/95 px-6 py-5 shadow-xl backdrop-blur-md md:hidden flex flex-col gap-3 animate-in fade-in slide-in-from-top-2">
+            <a
+              href="#product"
+              onClick={() => setMobileMenuOpen(false)}
+              className="text-sm font-medium text-slate-700 hover:text-emerald-600 py-1"
+            >
+              Product
+            </a>
+            <a
+              href="#features"
+              onClick={() => setMobileMenuOpen(false)}
+              className="text-sm font-medium text-slate-700 hover:text-emerald-600 py-1"
+            >
+              Features
+            </a>
+            <button
+              onClick={() => {
+                setMobileMenuOpen(false)
+                onOpenMethodology()
+              }}
+              className="text-left text-sm font-medium text-slate-700 hover:text-emerald-600 py-1"
+            >
+              Methodology
+            </button>
+            <button
+              onClick={() => {
+                setMobileMenuOpen(false)
+                onOpenResearch()
+              }}
+              className="text-left text-sm font-medium text-slate-700 hover:text-emerald-600 py-1"
+            >
+              Research
+            </button>
+            <div className="border-t border-slate-100 pt-3 flex flex-col gap-2">
+              {user ? (
+                <div className="flex items-center justify-between py-1">
+                  <span className="text-xs text-slate-700 font-medium flex items-center gap-1.5">
+                    <User size={13} className="text-emerald-600" /> {user.name}
+                  </span>
+                  <button
+                    onClick={() => {
+                      setMobileMenuOpen(false)
+                      onLogout()
+                    }}
+                    className="text-xs text-rose-600 font-medium hover:underline"
+                  >
+                    Sign out
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => {
+                    setMobileMenuOpen(false)
+                    onOpenAuth('signin')
+                  }}
+                  className="text-left text-sm font-medium text-slate-700 hover:text-emerald-600 py-1"
+                >
+                  Sign in
+                </button>
+              )}
+              <Button
+                onClick={() => {
+                  setMobileMenuOpen(false)
+                  onGetStarted()
+                }}
+                className="w-full rounded-xl bg-slate-950 text-white"
+              >
+                {user ? 'Open Dashboard' : 'Get started'}
+              </Button>
+            </div>
+          </div>
+        )}
       </header>
       <main>
-        <section className="mx-auto grid max-w-7xl items-center gap-16 px-6 pb-24 pt-16 lg:grid-cols-[.88fr_1.12fr] lg:px-10 lg:pb-32 lg:pt-24">
+        <section id="product" className="mx-auto grid max-w-7xl items-center gap-16 px-6 pb-24 pt-16 lg:grid-cols-[.88fr_1.12fr] lg:px-10 lg:pb-32 lg:pt-24">
           <div>
             <Badge tone="green">
               <Sparkles size={12} /> ADAPTIVE SERVERLESS CLOUD SCHEDULING
@@ -290,7 +426,12 @@ function Landing({ onExplore }: { onExplore: () => void }) {
               <Button onClick={onExplore} size="lg" className="rounded-xl bg-emerald-600 px-5 text-white hover:bg-emerald-700">
                 Explore dashboard <ArrowRight data-icon="inline-end" />
               </Button>
-              <Button size="lg" variant="outline" className="rounded-xl border-slate-200 bg-white px-5">
+              <Button
+                size="lg"
+                variant="outline"
+                onClick={onOpenMethodology}
+                className="rounded-xl border-slate-200 bg-white px-5 text-slate-700 hover:bg-slate-50"
+              >
                 Explore methodology
               </Button>
             </div>
@@ -310,7 +451,7 @@ function Landing({ onExplore }: { onExplore: () => void }) {
             </div>
           </div>
         </section>
-        <section id="methodology" className="border-y border-slate-200 bg-white">
+        <section id="methodology-preview" className="border-y border-slate-200 bg-white">
           <div className="mx-auto max-w-7xl px-6 py-20 lg:px-10">
             <div className="mb-12 flex flex-col justify-between gap-4 md:flex-row md:items-end">
               <div>
@@ -351,6 +492,22 @@ function Landing({ onExplore }: { onExplore: () => void }) {
                   )}
                 </div>
               ))}
+            </div>
+            <div className="mt-12 flex flex-wrap justify-center gap-3">
+              <Button
+                variant="outline"
+                onClick={onOpenMethodology}
+                className="rounded-xl border-slate-200 bg-white px-5 py-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50 shadow-sm"
+              >
+                View scheduling workflow &amp; SLA checks <ArrowRight size={13} className="ml-1.5" />
+              </Button>
+              <Button
+                variant="outline"
+                onClick={onOpenResearch}
+                className="rounded-xl border-slate-200 bg-white px-5 py-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50 shadow-sm"
+              >
+                Read research paper &amp; methodology <ArrowRight size={13} className="ml-1.5" />
+              </Button>
             </div>
           </div>
         </section>
@@ -2491,7 +2648,19 @@ function SettingsView() {
   )
 }
 
-function Dashboard({ onBack }: { onBack: () => void }) {
+function Dashboard({
+  onBack,
+  onOpenMethodology,
+  onOpenResearch,
+  user,
+  onLogout,
+}: {
+  onBack: () => void
+  onOpenMethodology?: () => void
+  onOpenResearch?: () => void
+  user?: UserSession | null
+  onLogout?: () => void
+}) {
   const [active, setActive] = useState('Overview')
   const [mobileOpen, setMobileOpen] = useState(false)
   const [experiments, setExperiments] = useState<ExperimentRecord[]>([])
@@ -2615,12 +2784,34 @@ function Dashboard({ onBack }: { onBack: () => void }) {
             </button>
           ))}
         </nav>
-        <div className="absolute bottom-5 left-5 right-5 border-t border-slate-100 pt-4">
+        <div className="absolute bottom-5 left-5 right-5 border-t border-slate-100 pt-4 flex flex-col gap-2">
           <button
             onClick={() => setActive('Settings')}
             className="flex items-center gap-3 text-sm text-slate-500 hover:text-slate-900"
           >
             <Settings2 size={16} /> Preferences
+          </button>
+          {onOpenMethodology && (
+            <button
+              onClick={onOpenMethodology}
+              className="flex items-center gap-3 text-sm text-slate-500 hover:text-slate-900"
+            >
+              <BookOpen size={16} /> Methodology
+            </button>
+          )}
+          {onOpenResearch && (
+            <button
+              onClick={onOpenResearch}
+              className="flex items-center gap-3 text-sm text-slate-500 hover:text-slate-900"
+            >
+              <FileText size={16} /> Research Paper
+            </button>
+          )}
+          <button
+            onClick={onBack}
+            className="flex items-center gap-3 text-sm text-slate-500 hover:text-slate-900"
+          >
+            <ChevronLeft size={16} /> Return to Home
           </button>
         </div>
       </aside>
@@ -2636,15 +2827,58 @@ function Dashboard({ onBack }: { onBack: () => void }) {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {onOpenMethodology && (
+              <button
+                onClick={onOpenMethodology}
+                className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition"
+                title="View Research Methodology"
+              >
+                <BookOpen size={13} className="text-emerald-600" />
+                <span>Methodology</span>
+              </button>
+            )}
+            {onOpenResearch && (
+              <button
+                onClick={onOpenResearch}
+                className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition"
+                title="View Research Framework"
+              >
+                <FileText size={13} className="text-emerald-600" />
+                <span>Research</span>
+              </button>
+            )}
             <Badge tone="green">
               <span className="size-1.5 rounded-full bg-emerald-500" /> Research Mode
             </Badge>
             <button className="grid size-9 place-items-center rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50">
               <Bell size={16} />
             </button>
-            <div className="grid size-9 place-items-center rounded-full bg-slate-950 text-xs font-medium text-white">
-              CF
-            </div>
+            {user ? (
+              <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
+                <div className="flex items-center gap-2">
+                  <div className="grid size-9 place-items-center rounded-full bg-emerald-600 text-xs font-semibold text-white shadow-sm">
+                    {user.name.slice(0, 2).toUpperCase()}
+                  </div>
+                  <div className="hidden md:block text-left text-xs">
+                    <div className="font-semibold text-slate-900 leading-tight">{user.name}</div>
+                    <div className="text-[10px] text-slate-400 leading-tight">{user.email}</div>
+                  </div>
+                </div>
+                {onLogout && (
+                  <button
+                    onClick={onLogout}
+                    className="grid size-8 place-items-center rounded-lg border border-slate-200 text-slate-500 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 transition"
+                    title="Sign out"
+                  >
+                    <LogOut size={14} />
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="grid size-9 place-items-center rounded-full bg-slate-950 text-xs font-medium text-white">
+                CF
+              </div>
+            )}
           </div>
         </header>
         <main className="mx-auto max-w-[1440px] p-5 lg:p-8">{content}</main>
@@ -2661,11 +2895,100 @@ function Dashboard({ onBack }: { onBack: () => void }) {
 }
 
 export function EcoServeApp() {
-  const [dashboard, setDashboard] = useState(false)
-  return dashboard ? (
-    <Dashboard onBack={() => setDashboard(false)} />
-  ) : (
-    <Landing onExplore={() => setDashboard(true)} />
+  const [view, setView] = useState<'landing' | 'methodology' | 'research' | 'dashboard'>('landing')
+  const [user, setUser] = useState<UserSession | null>(null)
+  const [authModal, setAuthModal] = useState<'signin' | 'register' | null>(null)
+
+  useEffect(() => {
+    fetch('/api/auth/session')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.authenticated && data.data?.user) {
+          setUser(data.data.user)
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' })
+    } catch {}
+    setUser(null)
+    setView('landing')
+  }
+
+  const handleAuthSuccess = (authenticatedUser: UserSession) => {
+    setUser(authenticatedUser)
+    setAuthModal(null)
+    setView('dashboard')
+  }
+
+  const handleGetStarted = () => {
+    if (user) {
+      setView('dashboard')
+    } else {
+      setAuthModal('register')
+    }
+  }
+
+  const handleExploreDashboard = () => {
+    if (user) {
+      setView('dashboard')
+    } else {
+      setAuthModal('signin')
+    }
+  }
+
+  return (
+    <>
+      {view === 'dashboard' ? (
+        <Dashboard
+          onBack={() => setView('landing')}
+          onOpenMethodology={() => setView('methodology')}
+          onOpenResearch={() => setView('research')}
+          user={user}
+          onLogout={handleLogout}
+        />
+      ) : view === 'methodology' ? (
+        <MethodologyView
+          onBack={() => setView('landing')}
+          onOpenDashboard={handleExploreDashboard}
+          onOpenResearch={() => setView('research')}
+          user={user}
+          onOpenAuth={(mode) => setAuthModal(mode)}
+          onLogout={handleLogout}
+        />
+      ) : view === 'research' ? (
+        <ResearchView
+          onBack={() => setView('landing')}
+          onOpenDashboard={handleExploreDashboard}
+          onOpenMethodology={() => setView('methodology')}
+          user={user}
+          onOpenAuth={(mode) => setAuthModal(mode)}
+          onLogout={handleLogout}
+        />
+      ) : (
+        <Landing
+          onExplore={handleExploreDashboard}
+          onGetStarted={handleGetStarted}
+          onOpenMethodology={() => setView('methodology')}
+          onOpenResearch={() => setView('research')}
+          onOpenAuth={(mode) => setAuthModal(mode)}
+          user={user}
+          onLogout={handleLogout}
+        />
+      )}
+
+      {authModal && (
+        <AuthModal
+          mode={authModal}
+          onClose={() => setAuthModal(null)}
+          onSuccess={handleAuthSuccess}
+          onSwitchMode={(mode) => setAuthModal(mode)}
+        />
+      )}
+    </>
   )
 }
 
