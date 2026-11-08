@@ -100,6 +100,7 @@ type ExperimentPrismaClient = PrismaClient | {
     count: (args?: any) => Promise<number>
     findMany: (args: any) => Promise<any[]>
     findUnique: (args: any) => Promise<any>
+    findFirst?: (args: any) => Promise<any>
     delete: (args: any) => Promise<any>
   }
   policyResult: {
@@ -237,6 +238,70 @@ export async function checkDatabaseConnectivity(client: ExperimentPrismaClient =
   }
 }
 
+export function generateExperimentLockKey(input: {
+  userId?: string | null
+  workloadType: string
+  requestCount: number
+  durationMinutes: number
+  slaLatencyThresholdMs: number
+  arrivalPattern: string
+  seed: number
+  weights?: any
+}): string {
+  const parts = [
+    input.userId || 'anon',
+    input.workloadType,
+    input.requestCount,
+    input.durationMinutes,
+    input.slaLatencyThresholdMs,
+    input.arrivalPattern,
+    input.seed,
+    JSON.stringify(input.weights || {}),
+  ]
+  return parts.join(':')
+}
+
+export function matchesExperimentWorkload(
+  exp: any,
+  input: {
+    workloadType: string
+    requestCount: number
+    durationMinutes: number
+    slaLatencyThresholdMs: number
+    arrivalPattern: string
+    seed: number
+    userId?: string | null
+    weights?: any
+  },
+  since: Date,
+  hasColumns: boolean
+): boolean {
+  if (!exp) return false
+  if (exp.workloadType !== input.workloadType) return false
+  if (Number(exp.requestCount) !== Number(input.requestCount)) return false
+  if (Number(exp.durationMinutes) !== Number(input.durationMinutes)) return false
+  if (Number(exp.slaLatencyThresholdMs) !== Number(input.slaLatencyThresholdMs)) return false
+  if (exp.arrivalPattern !== input.arrivalPattern) return false
+  if (Number(exp.seed) !== Number(input.seed)) return false
+  if (hasColumns && (exp.userId ?? null) !== (input.userId ?? null)) return false
+
+  if (input.weights && exp.weights) {
+    const w1 = input.weights
+    const w2 = exp.weights
+    if (
+      w1.alpha !== undefined &&
+      w2.alpha !== undefined &&
+      (w1.alpha !== w2.alpha || w1.beta !== w2.beta || w1.gamma !== w2.gamma || w1.delta !== w2.delta)
+    ) {
+      return false
+    }
+  }
+
+  const expTime = exp.createdAt instanceof Date ? exp.createdAt.getTime() : new Date(exp.createdAt).getTime()
+  if (expTime < since.getTime()) return false
+  return true
+}
+
 export async function createExperiment(
   input: CreateExperimentStorageInput,
   client: ExperimentPrismaClient = defaultPrisma
@@ -275,6 +340,60 @@ export async function createExperiment(
     }
 
     const created = await (client as any).$transaction(async (tx: any) => {
+      // 1. Acquire transaction-level advisory lock using deterministic lock key
+      if (typeof tx.$queryRaw === 'function') {
+        const lockKey = generateExperimentLockKey({
+          userId: input.userId,
+          workloadType: input.workloadType,
+          requestCount: input.requestCount,
+          durationMinutes: input.durationMinutes,
+          slaLatencyThresholdMs: input.slaLatencyThresholdMs,
+          arrivalPattern: input.arrivalPattern,
+          seed: input.seed,
+          weights: input.weights,
+        })
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`
+      }
+
+      // 2. Perform duplicate lookup inside the transaction after acquiring the lock
+      const windowSec = 5
+      const since = new Date(Date.now() - windowSec * 1000)
+
+      const whereClause: Record<string, any> = {
+        workloadType: input.workloadType,
+        requestCount: input.requestCount,
+        durationMinutes: input.durationMinutes,
+        slaLatencyThresholdMs: input.slaLatencyThresholdMs,
+        arrivalPattern: input.arrivalPattern,
+        seed: input.seed,
+        createdAt: { gte: since },
+      }
+
+      if (hasColumns) {
+        whereClause.userId = input.userId ?? null
+      }
+
+      const findFn =
+        (tx.experiment as any).findFirst
+          ? (args: any) => (tx.experiment as any).findFirst(args)
+          : async (args: any) => {
+              const list = await tx.experiment.findMany({ ...args, take: 1 })
+              return list && list.length > 0 ? list[0] : null
+            }
+
+      const existing = await findFn({
+        where: whereClause,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          policyResults: true,
+        },
+      })
+
+      if (existing && matchesExperimentWorkload(existing, input, since, hasColumns)) {
+        return existing
+      }
+
+      // 3. Insert experiment and policy results within the same transaction
       const exp = await tx.experiment.create({
         data: experimentData,
         include: {
@@ -293,6 +412,69 @@ export async function createExperiment(
     return formatted
   } catch (error) {
     return handlePrismaError(error)
+  }
+}
+
+export interface FindRecentDuplicateExperimentInput {
+  userId?: string | null
+  workloadType: string
+  requestCount: number
+  durationMinutes: number
+  slaLatencyThresholdMs: number
+  arrivalPattern: string
+  seed: number
+  windowSeconds?: number
+}
+
+/**
+ * Searches for an identical experiment recently created by the same user within a short time window.
+ * Used for server-side deduplication to prevent accidental double-insertions.
+ */
+export async function findRecentDuplicateExperiment(
+  params: FindRecentDuplicateExperimentInput,
+  client: ExperimentPrismaClient = defaultPrisma
+): Promise<ExperimentRecord | null> {
+  const windowSec = params.windowSeconds || 5
+  const since = new Date(Date.now() - windowSec * 1000)
+
+  try {
+    const hasColumns = await areOwnershipColumnsAvailable(client)
+
+    const findFn =
+      (client.experiment as any).findFirst
+        ? (args: any) => (client.experiment as any).findFirst(args)
+        : async (args: any) => {
+            const list = await client.experiment.findMany({ ...args, take: 1 })
+            return list && list.length > 0 ? list[0] : null
+          }
+
+    const whereClause: Record<string, any> = {
+      workloadType: params.workloadType,
+      requestCount: params.requestCount,
+      durationMinutes: params.durationMinutes,
+      slaLatencyThresholdMs: params.slaLatencyThresholdMs,
+      arrivalPattern: params.arrivalPattern,
+      seed: params.seed,
+      createdAt: { gte: since },
+    }
+
+    if (hasColumns) {
+      whereClause.userId = params.userId ?? null
+    }
+
+    const found = await findFn({
+      where: whereClause,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        policyResults: true,
+      },
+    })
+
+    if (!found) return null
+    return formatExperimentRecord(found)
+  } catch {
+    // Fail open safely on error so experiment persistence is never blocked
+    return null
   }
 }
 

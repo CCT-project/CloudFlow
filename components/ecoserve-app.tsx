@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   AlertCircle,
@@ -1281,6 +1281,7 @@ function Simulation({
   const [error, setError] = useState<string | null>(null)
   const [latestResult, setLatestResult] = useState<SimulateResponseBody | null>(null)
   const [latestExperiment, setLatestExperiment] = useState<ExperimentRecord | null>(null)
+  const isSubmittingRef = useRef(false)
 
   const handleNormalizeWeights = () => {
     const sum = alphaCost + betaCarbon + gammaLatency + deltaColdStart
@@ -1307,6 +1308,11 @@ function Simulation({
   }
 
   const handleRunSimulation = async () => {
+    // Prevent accidental double-submissions or concurrent execution
+    if (isSubmittingRef.current || loading) {
+      return
+    }
+    isSubmittingRef.current = true
     setLoading(true)
     setError(null)
     const currentWeights: AdaptiveObjectiveWeights = {
@@ -1357,6 +1363,7 @@ function Simulation({
     } catch {
       setError('Network error connecting to /api/simulate.')
     } finally {
+      isSubmittingRef.current = false
       setLoading(false)
     }
   }
@@ -2696,7 +2703,13 @@ function Dashboard({
   }, [])
 
   const handleSimulationComplete = (newExp: ExperimentRecord) => {
-    setExperiments((prev) => [newExp, ...prev])
+    setExperiments((prev) => {
+      // Guard against duplicate experiment items in UI state
+      if (prev.some((e) => e.id === newExp.id)) {
+        return prev
+      }
+      return [newExp, ...prev]
+    })
     setSelectedExperiment(newExp)
   }
 

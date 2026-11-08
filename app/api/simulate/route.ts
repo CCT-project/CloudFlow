@@ -4,15 +4,51 @@ import {
   DEFAULT_ADAPTIVE_WEIGHTS,
   PolicyType,
   PolicyPerformanceSummary,
+  SimulateResponseBody,
 } from '@/lib/types/scheduler'
 import { runSimulation } from '@/lib/simulation/engine'
 import { validateSimulateRequest, VALID_POLICIES } from '@/lib/validation/api-validator'
 import {
   createExperiment,
+  findRecentDuplicateExperiment,
   DatabaseUnavailableError,
   DatabaseError,
 } from '@/lib/storage/experiments'
 import { getSessionUser } from '@/lib/auth/session'
+
+// In-flight simulation tracking to prevent concurrent duplicate submissions
+const inFlightSimulations = new Map<string, Promise<SimulateResponseBody>>()
+
+// Recent simulation cache to prevent rapid repeated submissions (5-second deduplication window)
+interface RecentSimulationEntry {
+  result: SimulateResponseBody
+  timestamp: number
+}
+const recentSavedSimulations = new Map<string, RecentSimulationEntry>()
+const DEDUPLICATION_WINDOW_MS = 5000
+
+export function clearSimulationDeduplicationCache(): void {
+  inFlightSimulations.clear()
+  recentSavedSimulations.clear()
+}
+
+function getSimulationDeduplicationKey(
+  userId: string | null | undefined,
+  reqData: any
+): string {
+  const parts = [
+    userId || 'anon',
+    reqData.workloadType || 'Medium',
+    reqData.requestCount,
+    reqData.durationMinutes || 30,
+    reqData.slaLatencyThresholdMs,
+    reqData.arrivalPattern || 'Steady',
+    reqData.seed ?? 4242,
+    reqData.experimentName || '',
+    JSON.stringify(reqData.adaptiveWeights || {}),
+  ]
+  return parts.join(':')
+}
 
 export async function POST(request: NextRequest) {
   let body: unknown
@@ -49,56 +85,123 @@ export async function POST(request: NextRequest) {
       reqData.compareAllPolicies = true
     }
 
-    const result = runSimulation(reqData)
-
+    // When persistence is requested, enforce multi-layer deduplication
     if (reqData.saveExperiment) {
-      const expName =
-        reqData.experimentName ||
-        `Simulation-${result.workload.workloadType}-${new Date().toISOString().slice(0, 10)}`
+      const user = await getSessionUser()
+      const dedupKey = getSimulationDeduplicationKey(user?.id, reqData)
 
-      const summaries = result.policySummaries || {
-        [result.policy]: result.summary,
+      // Layer 1: Check in-flight concurrent execution promise
+      const existingInFlight = inFlightSimulations.get(dedupKey)
+      if (existingInFlight) {
+        const inFlightResult = await existingInFlight
+        return NextResponse.json(inFlightResult, { status: 200 })
       }
 
-      const policyResultsToSave = VALID_POLICIES.map((p: PolicyType) => {
-        const sum: PolicyPerformanceSummary = summaries[p] || result.summary
-        return {
-          policy: p,
-          totalRequests: sum.totalRequests,
-          averageLatencyMs: sum.averageLatencyMs,
-          p95LatencyMs: sum.p95LatencyMs,
-          totalCostUSD: sum.totalCostUSD,
-          totalCarbonG: sum.totalCarbonG,
-          coldStartRatePercent: sum.coldStartRatePercent,
-          slaViolationRatePercent: sum.slaViolationRatePercent,
-          averageOverheadMs: sum.averageOverheadMs,
-        }
-      })
+      // Layer 2: Check recent in-memory cache within deduplication window
+      const now = Date.now()
+      const recent = recentSavedSimulations.get(dedupKey)
+      if (recent && now - recent.timestamp < DEDUPLICATION_WINDOW_MS) {
+        return NextResponse.json(recent.result, { status: 200 })
+      }
 
-      const user = await getSessionUser()
-
-      const saved = await createExperiment({
-        name: expName,
-        workloadType: result.workload.workloadType,
-        requestCount: result.workload.requestCount,
-        durationMinutes: result.workload.durationMinutes,
-        slaLatencyThresholdMs: result.workload.slaLatencyThresholdMs,
-        arrivalPattern: result.workload.arrivalPattern,
-        seed: reqData.seed ?? 4242,
+      // Layer 3: Check database for an identical experiment recently created by this user
+      const existingDbRecord = await findRecentDuplicateExperiment({
         userId: user ? user.id : null,
-        isPublic: false,
-        weights: {
-          ...DEFAULT_ADAPTIVE_WEIGHTS,
-          ...(reqData.adaptiveWeights || {}),
-        },
-        assumptions: result.simulationAssumptions,
-        policyResults: policyResultsToSave,
+        workloadType: reqData.workloadType || 'Medium',
+        requestCount: reqData.requestCount,
+        durationMinutes: reqData.durationMinutes || 30,
+        slaLatencyThresholdMs: reqData.slaLatencyThresholdMs,
+        arrivalPattern: reqData.arrivalPattern || 'Steady',
+        seed: reqData.seed ?? 4242,
+        windowSeconds: 5,
       })
 
-      result.isSaved = true
-      result.savedExperimentId = saved.id
+      if (existingDbRecord) {
+        const result = runSimulation(reqData)
+        result.isSaved = true
+        result.savedExperimentId = existingDbRecord.id
+        recentSavedSimulations.set(dedupKey, { result, timestamp: Date.now() })
+        return NextResponse.json(result, { status: 200 })
+      }
+
+      // Execute simulation and persistence within tracked promise
+      const executionPromise = (async (): Promise<SimulateResponseBody> => {
+        const result = runSimulation(reqData)
+
+        const expName =
+          reqData.experimentName ||
+          `Simulation-${result.workload.workloadType}-${new Date().toISOString().slice(0, 10)}`
+
+        const summaries = result.policySummaries || {
+          [result.policy]: result.summary,
+        }
+
+        const policyResultsToSave = VALID_POLICIES.map((p: PolicyType) => {
+          const sum: PolicyPerformanceSummary = summaries[p] || result.summary
+          return {
+            policy: p,
+            totalRequests: sum.totalRequests,
+            averageLatencyMs: sum.averageLatencyMs,
+            p95LatencyMs: sum.p95LatencyMs,
+            totalCostUSD: sum.totalCostUSD,
+            totalCarbonG: sum.totalCarbonG,
+            coldStartRatePercent: sum.coldStartRatePercent,
+            slaViolationRatePercent: sum.slaViolationRatePercent,
+            averageOverheadMs: sum.averageOverheadMs,
+          }
+        })
+
+        const saved = await createExperiment({
+          name: expName,
+          workloadType: result.workload.workloadType,
+          requestCount: result.workload.requestCount,
+          durationMinutes: result.workload.durationMinutes,
+          slaLatencyThresholdMs: result.workload.slaLatencyThresholdMs,
+          arrivalPattern: result.workload.arrivalPattern,
+          seed: reqData.seed ?? 4242,
+          userId: user ? user.id : null,
+          isPublic: false,
+          weights: {
+            ...DEFAULT_ADAPTIVE_WEIGHTS,
+            ...(reqData.adaptiveWeights || {}),
+          },
+          assumptions: result.simulationAssumptions,
+          policyResults: policyResultsToSave,
+        })
+
+        result.isSaved = true
+        result.savedExperimentId = saved.id
+
+        // Cache completed result for recent window
+        recentSavedSimulations.set(dedupKey, {
+          result,
+          timestamp: Date.now(),
+        })
+
+        // Prune stale cache entries
+        if (recentSavedSimulations.size > 100) {
+          const cutoff = Date.now() - DEDUPLICATION_WINDOW_MS * 2
+          for (const [k, v] of recentSavedSimulations.entries()) {
+            if (v.timestamp < cutoff) {
+              recentSavedSimulations.delete(k)
+            }
+          }
+        }
+
+        return result
+      })()
+
+      inFlightSimulations.set(dedupKey, executionPromise)
+      try {
+        const finalResult = await executionPromise
+        return NextResponse.json(finalResult, { status: 200 })
+      } finally {
+        inFlightSimulations.delete(dedupKey)
+      }
     }
 
+    // Non-persisted transient simulation (saveExperiment === false)
+    const result = runSimulation(reqData)
     return NextResponse.json(result, { status: 200 })
   } catch (err: unknown) {
     if (err instanceof DatabaseUnavailableError) {
