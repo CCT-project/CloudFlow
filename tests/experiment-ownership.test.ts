@@ -13,6 +13,7 @@ import {
   ForbiddenError,
 } from '../lib/storage/experiments.ts'
 import { VALID_POLICIES } from '../lib/validation/api-validator.ts'
+import { generateExperimentCSV, generateExperimentPDFDoc } from '../lib/reports/export.ts'
 
 function createMockPrismaClient() {
   const experiments: any[] = []
@@ -495,4 +496,60 @@ test('Multi-User Ownership: getExperiments isolates list view by user and includ
   const onlyMineA = await getExperiments({ userId: 'user-a-uuid', includePublic: false }, client)
   assert.equal(onlyMineA.total, 1)
   assert.equal(onlyMineA.experiments[0].name, 'User A Private #1')
+})
+
+test('Multi-User Ownership & Reports: Reports cannot be generated for another user private experiment', async () => {
+  const client = createMockPrismaClient()
+
+  const expB = await createExperiment(
+    {
+      name: 'User B Confidential Benchmark',
+      workloadType: 'High',
+      requestCount: 4000,
+      durationMinutes: 40,
+      slaLatencyThresholdMs: 250,
+      arrivalPattern: 'Bursty',
+      seed: 888,
+      userId: 'user-b-uuid',
+      isPublic: false,
+      weights: { alpha: 0.4, beta: 0.2, gamma: 0.3, delta: 0.1 },
+      assumptions: {
+        prng: 'Mulberry32',
+        latencyModel: 'Deterministic',
+        costModel: 'Standard',
+        carbonModel: 'Marginal',
+        coldStartModel: 'Warm-pool',
+      },
+      policyResults: samplePolicyResults,
+    },
+    client
+  )
+
+  // 1. User A attempts to access User B's experiment to export report -> Must throw ForbiddenError
+  await assert.rejects(
+    async () => {
+      const unauthorizedRecord = await getExperimentById(expB.id, 'user-a-uuid', client)
+      generateExperimentCSV(unauthorizedRecord)
+    },
+    (err: any) => {
+      assert.ok(err instanceof ForbiddenError, 'Unauthorized report export must be blocked with ForbiddenError')
+      return true
+    }
+  )
+
+  // 2. User B retrieves their own experiment and successfully generates CSV and PDF reports
+  const authorizedRecord = await getExperimentById(expB.id, 'user-b-uuid', client)
+  assert.equal(authorizedRecord.id, expB.id)
+
+  const csv = generateExperimentCSV(authorizedRecord)
+  assert.ok(csv.includes(expB.id), 'CSV must contain the experiment ID')
+  assert.ok(csv.includes('User B Confidential Benchmark'), 'CSV must contain the experiment name')
+  assert.ok(csv.includes('4000'), 'CSV must contain the request count')
+  assert.ok(csv.includes('CloudFlow adaptive'), 'CSV must include CloudFlow adaptive policy')
+  assert.ok(!csv.includes('user-a-uuid'), 'CSV must not contain foreign user IDs')
+
+  const pdfDoc = generateExperimentPDFDoc(authorizedRecord)
+  assert.ok(pdfDoc, 'PDF document must be generated successfully')
+  const pdfOutput = pdfDoc.output('datauristring')
+  assert.ok(pdfOutput.startsWith('data:application/pdf'), 'PDF must produce valid application/pdf output')
 })
