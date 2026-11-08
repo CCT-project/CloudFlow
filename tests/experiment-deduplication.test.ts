@@ -67,7 +67,7 @@ function createMockPrismaClient(options: MockOptions = {}) {
               })
             }
             activeLocks.add(lockKey)
-            return [{ pg_advisory_xact_lock: '' }]
+            return [{ lock_acquired: 1 }]
           }
 
           // Default column check query
@@ -507,4 +507,40 @@ test('Phase 13.4 Regression: Advisory lock query explicitly casts parameter to t
     'Lock query must explicitly cast parameter to ::text to prevent PostgreSQL 42P18 parameter type ambiguity'
   )
 })
+
+test('Phase 13.12 Regression: Advisory lock query returns 1::int AS lock_acquired to avoid Prisma void deserialization error', async () => {
+  const client = createMockPrismaClient()
+  const input = {
+    name: 'Void-Deserialization-Test',
+    workloadType: 'Medium' as const,
+    requestCount: 5000,
+    durationMinutes: 10,
+    slaLatencyThresholdMs: 350,
+    arrivalPattern: 'Steady' as const,
+    seed: 888,
+    userId: 'user-void-test',
+    isPublic: false,
+    weights: { alpha: 0.35, beta: 0.25, gamma: 0.25, delta: 0.15 },
+    assumptions: sampleAssumptions,
+    policyResults: samplePolicies,
+  }
+
+  await createExperiment(input, client)
+
+  const lockQuery = client._executedRawQueries.find((q: string) => q.includes('pg_advisory_xact_lock'))
+  assert.ok(lockQuery, 'Must execute pg_advisory_xact_lock query')
+  assert.ok(
+    lockQuery.includes('SELECT 1::int AS lock_acquired'),
+    'Lock query must wrap void pg_advisory_xact_lock in SELECT 1::int AS lock_acquired'
+  )
+  assert.ok(
+    lockQuery.includes('FROM (') && lockQuery.includes(') AS lock_result'),
+    'Lock query must use subquery aliased as lock_result'
+  )
+  assert.ok(
+    lockQuery.includes('::text'),
+    'Lock query must retain ::text cast on parameter'
+  )
+})
+
 
