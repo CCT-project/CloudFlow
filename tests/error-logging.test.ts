@@ -181,10 +181,15 @@ test('Error Logging: sanitizeCorrelationId validates, preserves, and replaces co
 
 test('Error Logging: createExperiment propagates correlationId and logs safe error on transaction failure', async () => {
   const originalConsoleError = console.error
+  const originalDatabaseUrl = process.env.DATABASE_URL
   const loggedLines: string[] = []
   console.error = (msg: string) => {
     loggedLines.push(msg)
   }
+
+  // Ensure test environment reflects a configured database so the test exercises
+  // transaction persistence failure rather than unconfigured connection failure.
+  process.env.DATABASE_URL = originalDatabaseUrl || 'postgresql://test_user:test_pass@localhost:5432/test_db'
 
   const failingMockClient = {
     $transaction: async () => {
@@ -237,15 +242,20 @@ test('Error Logging: createExperiment propagates correlationId and logs safe err
       }
     )
 
-    assert.ok(loggedLines.length >= 1, 'Must log error to console.error')
+    assert.equal(loggedLines.length, 1, 'Structured logging must occur exactly once')
     const parsed = JSON.parse(loggedLines[0])
-    assert.equal(parsed.correlationId, 'corr-sim-test-99')
+    assert.equal(parsed.correlationId, 'corr-sim-test-99', 'Correlation ID must be propagated to log')
     assert.equal(parsed.operation, 'createExperiment')
     assert.equal(parsed.prismaCode, 'P2010')
     assert.equal(parsed.sqlState, '42P18')
     assert.equal(parsed.sanitizedMessage.includes('secret123'), false, 'Credentials must be redacted from log output')
   } finally {
     console.error = originalConsoleError
+    if (originalDatabaseUrl !== undefined) {
+      process.env.DATABASE_URL = originalDatabaseUrl
+    } else {
+      delete process.env.DATABASE_URL
+    }
   }
 })
 
