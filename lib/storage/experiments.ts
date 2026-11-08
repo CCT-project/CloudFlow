@@ -352,7 +352,7 @@ export async function createExperiment(
           seed: input.seed,
           weights: input.weights,
         })
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}::text))`
       }
 
       // 2. Perform duplicate lookup inside the transaction after acquiring the lock

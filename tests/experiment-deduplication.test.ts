@@ -19,6 +19,7 @@ function createMockPrismaClient(options: MockOptions = {}) {
   const policyResults: any[] = []
   const acquiredLocks: string[] = []
   const releasedLocks: string[] = []
+  const executedRawQueries: string[] = []
   const activeLocks = new Set<string>()
   const lockWaiters = new Map<string, Array<() => void>>()
 
@@ -27,6 +28,7 @@ function createMockPrismaClient(options: MockOptions = {}) {
     _policyResults: policyResults,
     _acquiredLocks: acquiredLocks,
     _releasedLocks: releasedLocks,
+    _executedRawQueries: executedRawQueries,
     _activeLocks: activeLocks,
     failQueryRaw: options.failQueryRaw ?? false,
     failInsert: options.failInsert ?? false,
@@ -48,6 +50,8 @@ function createMockPrismaClient(options: MockOptions = {}) {
               : Array.isArray(query)
                 ? query.join(' ')
                 : query?.strings?.join(' ') || String(query || '')
+
+          executedRawQueries.push(queryStr)
 
           if (queryStr.includes('pg_advisory_xact_lock')) {
             const lockKey = args[0] || (query?.values && query.values[0]) || 'unknown-lock'
@@ -474,3 +478,33 @@ test('Phase 13.1 Testing 6: Transaction rollback and lock release on error', asy
   assert.equal(client._releasedLocks.length, 1, 'Transaction-scoped lock must be recorded as released')
   assert.equal(client._experiments.length, 0, 'Rolled back transaction must leave no experiment rows')
 })
+
+test('Phase 13.4 Regression: Advisory lock query explicitly casts parameter to text to prevent PostgreSQL 42P18 type ambiguity', async () => {
+  const client = createMockPrismaClient()
+
+  const input = {
+    name: 'Type-Cast-Test',
+    workloadType: 'Medium' as const,
+    requestCount: 5000,
+    durationMinutes: 10,
+    slaLatencyThresholdMs: 350,
+    arrivalPattern: 'Steady' as const,
+    seed: 999,
+    userId: 'user-type-cast',
+    isPublic: false,
+    weights: { alpha: 0.35, beta: 0.25, gamma: 0.25, delta: 0.15 },
+    assumptions: sampleAssumptions,
+    policyResults: samplePolicies,
+  }
+
+  await createExperiment(input, client)
+
+  // Verify that the advisory lock query was executed with explicit ::text cast
+  const lockQuery = client._executedRawQueries.find((q: string) => q.includes('pg_advisory_xact_lock'))
+  assert.ok(lockQuery, 'Must execute pg_advisory_xact_lock query')
+  assert.ok(
+    lockQuery.includes('::text'),
+    'Lock query must explicitly cast parameter to ::text to prevent PostgreSQL 42P18 parameter type ambiguity'
+  )
+})
+
