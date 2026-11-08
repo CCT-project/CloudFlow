@@ -73,6 +73,7 @@ export interface CreateExperimentStorageInput {
     slaViolationRatePercent: number
     averageOverheadMs: number
   }>
+  correlationId?: string
 }
 
 export interface GetExperimentsOptions {
@@ -166,10 +167,93 @@ export function resetOwnershipColumnsCheck(): void {
   defaultPrismaColumnsExist = false
 }
 
-function handlePrismaError(error: unknown): never {
+export function sanitizeDatabaseErrorMessage(error: unknown): string {
+  if (!error) return 'Unknown database error'
+  const rawMessage =
+    typeof error === 'string'
+      ? error
+      : error instanceof Error
+        ? error.message
+        : (error as any)?.message || String(error)
+
+  return rawMessage
+    // Redact connection strings with credentials: postgres://user:password@host...
+    .replace(/postgres(ql)?:\/\/[^\s@]+@/gi, 'postgresql://[REDACTED_AUTH]@')
+    // Redact any remaining raw URLs with query params
+    .replace(/postgres(ql)?:\/\/[^\s"'`]+/gi, 'postgresql://[REDACTED_URL]')
+    // Redact explicit credential flags
+    .replace(/(password|secret|token|api_?key)=([^\s;&"']+)/gi, '$1=[REDACTED]')
+    // Redact emails
+    .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '[REDACTED_EMAIL]')
+    // Truncate to reasonable safe length
+    .slice(0, 500)
+}
+
+export interface ErrorLogContext {
+  operation?: string
+  correlationId?: string
+}
+
+const loggedErrors = new WeakSet<object>()
+
+export function sanitizeCorrelationId(id: unknown): string {
+  if (typeof id === 'string') {
+    const trimmed = id.trim()
+    if (/^[a-zA-Z0-9_-]{1,64}$/.test(trimmed)) {
+      return trimmed
+    }
+  }
+  return crypto.randomUUID()
+}
+
+export function logStructuredDatabaseError(error: unknown, context: ErrorLogContext = {}): void {
+  // Prevent duplicate logging of the same exception without mutating error object
+  if (error && typeof error === 'object') {
+    if (loggedErrors.has(error)) {
+      return
+    }
+    loggedErrors.add(error)
+  }
+
+  const err = error as { name?: string; code?: string; meta?: any; message?: string }
+  const safeMessage = sanitizeDatabaseErrorMessage(error)
+
+  const isPrismaCode = typeof err?.code === 'string' && /^P\d{4}$/.test(err.code)
+  const prismaCode = isPrismaCode ? err.code : undefined
+
+  let sqlState: string | undefined
+  if (
+    err?.meta?.code &&
+    typeof err.meta.code === 'string' &&
+    /^[0-9A-Z]{5}$/.test(err.meta.code) &&
+    !/^P\d{4}$/.test(err.meta.code)
+  ) {
+    sqlState = err.meta.code
+  } else if (err?.code && typeof err.code === 'string' && /^[0-9A-Z]{5}$/.test(err.code) && !isPrismaCode) {
+    sqlState = err.code
+  }
+
+  const payload = {
+    level: 'error',
+    correlationId: context.correlationId || 'unknown',
+    operation: context.operation || 'database_operation',
+    errorName: err?.name || (error instanceof Error ? error.name : 'DatabaseError'),
+    prismaCode,
+    sqlState,
+    sanitizedMessage: safeMessage,
+    timestamp: new Date().toISOString(),
+  }
+
+  console.error(JSON.stringify(payload))
+}
+
+function handlePrismaError(error: unknown, context: ErrorLogContext = {}): never {
   if (error instanceof NotFoundError || error instanceof ForbiddenError || error instanceof DatabaseError) {
     throw error
   }
+
+  logStructuredDatabaseError(error, context)
+
   const err = error as { code?: string; message?: string }
   if (err?.code === 'P2025') {
     throw new NotFoundError('The requested experiment was not found.')
@@ -411,7 +495,10 @@ export async function createExperiment(
     }
     return formatted
   } catch (error) {
-    return handlePrismaError(error)
+    return handlePrismaError(error, {
+      operation: 'createExperiment',
+      correlationId: input.correlationId,
+    })
   }
 }
 
@@ -540,7 +627,9 @@ export async function getExperiments(
       totalPages,
     }
   } catch (error) {
-    return handlePrismaError(error)
+    return handlePrismaError(error, {
+      operation: 'getExperiments',
+    })
   }
 }
 
@@ -583,7 +672,9 @@ export async function getExperimentById(
 
     return formatExperimentRecord(exp)
   } catch (error) {
-    return handlePrismaError(error)
+    return handlePrismaError(error, {
+      operation: 'getExperimentById',
+    })
   }
 }
 
@@ -630,6 +721,8 @@ export async function deleteExperiment(
 
     return { id, deleted: true }
   } catch (error) {
-    return handlePrismaError(error)
+    return handlePrismaError(error, {
+      operation: 'deleteExperiment',
+    })
   }
 }

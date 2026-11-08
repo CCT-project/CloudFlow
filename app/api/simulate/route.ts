@@ -13,6 +13,8 @@ import {
   findRecentDuplicateExperiment,
   DatabaseUnavailableError,
   DatabaseError,
+  logStructuredDatabaseError,
+  sanitizeCorrelationId,
 } from '@/lib/storage/experiments'
 import { getSessionUser } from '@/lib/auth/session'
 
@@ -51,6 +53,20 @@ function getSimulationDeduplicationKey(
 }
 
 export async function POST(request: NextRequest) {
+  const correlationId = sanitizeCorrelationId(request.headers.get('x-correlation-id'))
+
+  const jsonResponse = (data: unknown, init?: number | ResponseInit) => {
+    const status = typeof init === 'number' ? init : init?.status || 200
+    const existingHeaders = typeof init === 'object' && init?.headers ? init.headers : {}
+    return NextResponse.json(data, {
+      status,
+      headers: {
+        ...existingHeaders,
+        'x-correlation-id': correlationId,
+      },
+    })
+  }
+
   let body: unknown
   try {
     body = await request.json()
@@ -62,7 +78,7 @@ export async function POST(request: NextRequest) {
         message: 'The request body could not be parsed as valid JSON.',
       },
     }
-    return NextResponse.json(errorResponse, { status: 400 })
+    return jsonResponse(errorResponse, 400)
   }
 
   const validation = validateSimulateRequest(body)
@@ -75,7 +91,7 @@ export async function POST(request: NextRequest) {
         details: validation.details,
       },
     }
-    return NextResponse.json(errorResponse, { status: 400 })
+    return jsonResponse(errorResponse, 400)
   }
 
   try {
@@ -94,14 +110,14 @@ export async function POST(request: NextRequest) {
       const existingInFlight = inFlightSimulations.get(dedupKey)
       if (existingInFlight) {
         const inFlightResult = await existingInFlight
-        return NextResponse.json(inFlightResult, { status: 200 })
+        return jsonResponse(inFlightResult, 200)
       }
 
       // Layer 2: Check recent in-memory cache within deduplication window
       const now = Date.now()
       const recent = recentSavedSimulations.get(dedupKey)
       if (recent && now - recent.timestamp < DEDUPLICATION_WINDOW_MS) {
-        return NextResponse.json(recent.result, { status: 200 })
+        return jsonResponse(recent.result, 200)
       }
 
       // Layer 3: Check database for an identical experiment recently created by this user
@@ -121,7 +137,7 @@ export async function POST(request: NextRequest) {
         result.isSaved = true
         result.savedExperimentId = existingDbRecord.id
         recentSavedSimulations.set(dedupKey, { result, timestamp: Date.now() })
-        return NextResponse.json(result, { status: 200 })
+        return jsonResponse(result, 200)
       }
 
       // Execute simulation and persistence within tracked promise
@@ -167,6 +183,7 @@ export async function POST(request: NextRequest) {
           },
           assumptions: result.simulationAssumptions,
           policyResults: policyResultsToSave,
+          correlationId,
         })
 
         result.isSaved = true
@@ -194,7 +211,7 @@ export async function POST(request: NextRequest) {
       inFlightSimulations.set(dedupKey, executionPromise)
       try {
         const finalResult = await executionPromise
-        return NextResponse.json(finalResult, { status: 200 })
+        return jsonResponse(finalResult, 200)
       } finally {
         inFlightSimulations.delete(dedupKey)
       }
@@ -202,8 +219,13 @@ export async function POST(request: NextRequest) {
 
     // Non-persisted transient simulation (saveExperiment === false)
     const result = runSimulation(reqData)
-    return NextResponse.json(result, { status: 200 })
+    return jsonResponse(result, 200)
   } catch (err: unknown) {
+    logStructuredDatabaseError(err, {
+      operation: 'simulate_route',
+      correlationId,
+    })
+
     if (err instanceof DatabaseUnavailableError) {
       const errorResponse: ApiErrorResponse = {
         status: 'error',
@@ -212,7 +234,7 @@ export async function POST(request: NextRequest) {
           message: err.message,
         },
       }
-      return NextResponse.json(errorResponse, { status: 503 })
+      return jsonResponse(errorResponse, 503)
     }
 
     if (err instanceof DatabaseError) {
@@ -223,7 +245,7 @@ export async function POST(request: NextRequest) {
           message: err.message,
         },
       }
-      return NextResponse.json(errorResponse, { status: 500 })
+      return jsonResponse(errorResponse, 500)
     }
 
     const message = err instanceof Error ? err.message : 'An error occurred during workload simulation.'
@@ -234,6 +256,6 @@ export async function POST(request: NextRequest) {
         message,
       },
     }
-    return NextResponse.json(errorResponse, { status: 422 })
+    return jsonResponse(errorResponse, 422)
   }
 }
