@@ -1,6 +1,7 @@
 import type {
   AdaptiveObjectiveWeights,
   ArrivalPattern,
+  BatchResearchRequestBody,
   CreateExperimentRequestBody,
   PersistedPolicyResult,
   PolicyType,
@@ -660,6 +661,200 @@ export function validateLoginRequest(body: unknown): ValidationResult<LoginInput
     data: {
       email: (email as string).trim().toLowerCase(),
       password: password as string,
+    },
+  }
+}
+
+export const MIN_BATCH_SEEDS = 30
+export const MAX_BATCH_SEEDS = 100
+export const MIN_BATCH_REQUEST_COUNT = 50
+export const MAX_BATCH_REQUEST_COUNT = 5000
+export const MAX_BATCH_TOTAL_EVALUATIONS_PRODUCT = 50000
+
+export function validateBatchResearchRequest(body: unknown): ValidationResult<BatchResearchRequestBody> {
+  const details: string[] = []
+
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return {
+      isValid: false,
+      code: 'INVALID_JSON_BODY',
+      message: 'Request payload must be a valid JSON object.',
+      details: ['Expected JSON object as root payload.'],
+    }
+  }
+
+  const raw = body as Record<string, unknown>
+
+  // Seeds validation
+  let validatedSeeds: number[] | undefined
+  let seedCount = 30
+  let startingSeed = 4200
+
+  if (raw.seeds !== undefined && raw.seeds !== null) {
+    if (!Array.isArray(raw.seeds)) {
+      details.push("Field 'seeds' must be an array of numbers.")
+    } else {
+      const distinct = new Set<number>()
+      for (const s of raw.seeds) {
+        if (typeof s !== 'number' || !Number.isInteger(s)) {
+          details.push('All elements in seeds must be valid integers.')
+          break
+        }
+        distinct.add(s)
+      }
+      if (distinct.size < MIN_BATCH_SEEDS) {
+        details.push(
+          `Field 'seeds' must contain at least ${MIN_BATCH_SEEDS} distinct seeds (received ${distinct.size}).`
+        )
+      } else if (raw.seeds.length > MAX_BATCH_SEEDS) {
+        details.push(`Field 'seeds' exceeds maximum limit of ${MAX_BATCH_SEEDS} seeds.`)
+      } else {
+        validatedSeeds = raw.seeds as number[]
+      }
+    }
+  } else if (raw.seedCount !== undefined && raw.seedCount !== null) {
+    if (typeof raw.seedCount !== 'number' || !Number.isInteger(raw.seedCount)) {
+      details.push("Field 'seedCount' must be an integer.")
+    } else if (raw.seedCount < MIN_BATCH_SEEDS) {
+      details.push(
+        `Field 'seedCount' must be at least ${MIN_BATCH_SEEDS} for statistically defensible results.`
+      )
+    } else if (raw.seedCount > MAX_BATCH_SEEDS) {
+      details.push(`Field 'seedCount' exceeds maximum allowable limit of ${MAX_BATCH_SEEDS}.`)
+    } else {
+      seedCount = raw.seedCount
+    }
+  }
+
+  if (raw.startingSeed !== undefined && raw.startingSeed !== null) {
+    if (typeof raw.startingSeed !== 'number' || !Number.isInteger(raw.startingSeed)) {
+      details.push("Field 'startingSeed' must be an integer.")
+    } else {
+      startingSeed = raw.startingSeed
+    }
+  }
+
+  // Request count
+  let requestCount = 500
+  if (raw.requestCount !== undefined && raw.requestCount !== null) {
+    if (typeof raw.requestCount !== 'number' || !Number.isInteger(raw.requestCount)) {
+      details.push("Field 'requestCount' must be an integer.")
+    } else if (raw.requestCount < MIN_BATCH_REQUEST_COUNT) {
+      details.push(`Field 'requestCount' must be at least ${MIN_BATCH_REQUEST_COUNT}.`)
+    } else if (raw.requestCount > MAX_BATCH_REQUEST_COUNT) {
+      details.push(
+        `Field 'requestCount' exceeds maximum allowable limit of ${MAX_BATCH_REQUEST_COUNT} per seed.`
+      )
+    } else {
+      requestCount = raw.requestCount
+    }
+  }
+
+  // Compound computation limit: seedCount * requestCount <= 50,000
+  const effectiveSeedCount = validatedSeeds ? validatedSeeds.length : seedCount
+  if (effectiveSeedCount * requestCount > MAX_BATCH_TOTAL_EVALUATIONS_PRODUCT) {
+    details.push(
+      `Combined batch computation size of ${effectiveSeedCount * requestCount} requests (${effectiveSeedCount} seeds × ${requestCount} req/seed) exceeds the allowable computation limit of ${MAX_BATCH_TOTAL_EVALUATIONS_PRODUCT} requests.`
+    )
+  }
+
+  // SLA threshold
+  let slaLatencyThresholdMs = 250
+  if (raw.slaLatencyThresholdMs !== undefined && raw.slaLatencyThresholdMs !== null) {
+    if (
+      typeof raw.slaLatencyThresholdMs !== 'number' ||
+      !Number.isFinite(raw.slaLatencyThresholdMs) ||
+      raw.slaLatencyThresholdMs <= 0
+    ) {
+      details.push("Field 'slaLatencyThresholdMs' must be a strictly positive number.")
+    } else {
+      slaLatencyThresholdMs = raw.slaLatencyThresholdMs
+    }
+  }
+
+  // Duration minutes
+  let durationMinutes = 15
+  if (raw.durationMinutes !== undefined && raw.durationMinutes !== null) {
+    if (
+      typeof raw.durationMinutes !== 'number' ||
+      !Number.isFinite(raw.durationMinutes) ||
+      raw.durationMinutes <= 0
+    ) {
+      details.push("Field 'durationMinutes' must be a positive number.")
+    } else {
+      durationMinutes = raw.durationMinutes
+    }
+  }
+
+  // Arrival pattern
+  let arrivalPattern: ArrivalPattern = 'Poisson'
+  if (raw.arrivalPattern !== undefined && raw.arrivalPattern !== null) {
+    const validPatterns: ArrivalPattern[] = ['Poisson', 'Steady', 'Bursty']
+    if (!validPatterns.includes(raw.arrivalPattern as ArrivalPattern)) {
+      details.push("Field 'arrivalPattern' must be one of: 'Poisson', 'Steady', 'Bursty'.")
+    } else {
+      arrivalPattern = raw.arrivalPattern as ArrivalPattern
+    }
+  }
+
+  // Workload type
+  let workloadType: WorkloadType = 'Medium'
+  if (raw.workloadType !== undefined && raw.workloadType !== null) {
+    const validWorkloads: WorkloadType[] = ['Low', 'Medium', 'High', 'Bursty', 'Cold-Start-Heavy']
+    if (!validWorkloads.includes(raw.workloadType as WorkloadType)) {
+      details.push(
+        "Field 'workloadType' must be one of: 'Low', 'Medium', 'High', 'Bursty', 'Cold-Start-Heavy'."
+      )
+    } else {
+      workloadType = raw.workloadType as WorkloadType
+    }
+  }
+
+  // Adaptive weights (optional)
+  let validatedWeights: Partial<AdaptiveObjectiveWeights> | undefined
+  if (raw.adaptiveWeights !== undefined && raw.adaptiveWeights !== null) {
+    if (typeof raw.adaptiveWeights !== 'object' || Array.isArray(raw.adaptiveWeights)) {
+      details.push("Field 'adaptiveWeights' must be an object with numeric alpha, beta, gamma, delta weights.")
+    } else {
+      try {
+        validateAdaptiveWeights(raw.adaptiveWeights as Partial<AdaptiveObjectiveWeights>)
+        validatedWeights = raw.adaptiveWeights as Partial<AdaptiveObjectiveWeights>
+      } catch (err: unknown) {
+        details.push(err instanceof Error ? err.message : 'Invalid adaptiveWeights configuration.')
+      }
+    }
+  }
+
+  if (details.length > 0) {
+    return {
+      isValid: false,
+      code: 'VALIDATION_FAILED',
+      message: details[0],
+      details,
+    }
+  }
+
+  // If seeds array was not provided, generate deterministically from startingSeed and seedCount
+  if (!validatedSeeds) {
+    validatedSeeds = []
+    for (let i = 0; i < seedCount; i++) {
+      validatedSeeds.push(startingSeed + i)
+    }
+  }
+
+  return {
+    isValid: true,
+    data: {
+      seedCount: validatedSeeds.length,
+      startingSeed,
+      seeds: validatedSeeds,
+      requestCount,
+      durationMinutes,
+      slaLatencyThresholdMs,
+      arrivalPattern,
+      workloadType,
+      adaptiveWeights: validatedWeights,
+      candidates: Array.isArray(raw.candidates) ? (raw.candidates as ServerlessCandidate[]) : undefined,
     },
   }
 }

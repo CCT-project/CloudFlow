@@ -20,7 +20,7 @@ import { DEFAULT_CANDIDATES } from './defaults.ts'
 import { DeterministicPRNG, generateWorkloadRequests } from './workload.ts'
 import type { SyntheticRequest } from './workload.ts'
 
-const ALL_POLICIES: PolicyType[] = [
+export const ALL_POLICIES: PolicyType[] = [
   'Latency-first',
   'Cost-first',
   'Carbon-first',
@@ -28,7 +28,7 @@ const ALL_POLICIES: PolicyType[] = [
   'CloudFlow adaptive',
 ]
 
-interface PolicySimulationResult {
+export interface PolicySimulationResult {
   summary: PolicyPerformanceSummary
   traces: SimulatedRequestTrace[]
 }
@@ -36,7 +36,7 @@ interface PolicySimulationResult {
 /**
  * Simulates a single policy over an exact, predetermined sequence of synthetic requests.
  */
-function simulatePolicyOnWorkload(
+export function simulatePolicyOnWorkload(
   requests: SyntheticRequest[],
   policy: PolicyType,
   candidatePool: ServerlessCandidate[],

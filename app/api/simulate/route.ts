@@ -17,6 +17,11 @@ import {
   sanitizeCorrelationId,
 } from '@/lib/storage/experiments'
 import { getSessionUser } from '@/lib/auth/session'
+import {
+  checkRateLimit,
+  createRateLimitErrorResponse,
+  createRateLimitHeaders,
+} from '@/lib/rate-limit/limiter'
 
 // In-flight simulation tracking to prevent concurrent duplicate submissions
 const inFlightSimulations = new Map<string, Promise<SimulateResponseBody>>()
@@ -55,6 +60,20 @@ function getSimulationDeduplicationKey(
 export async function POST(request: NextRequest) {
   const correlationId = sanitizeCorrelationId(request.headers.get('x-correlation-id'))
 
+  // Enforce distributed rate limiting (20 requests per minute)
+  const sessionUser = await getSessionUser()
+  const rl = await checkRateLimit('simulate', request, sessionUser?.id)
+  if (!rl.success) {
+    const errorRes = createRateLimitErrorResponse(
+      rl,
+      'Too many simulation requests. You have exceeded the rate limit. Please try again later.'
+    )
+    errorRes.headers.set('x-correlation-id', correlationId)
+    return errorRes
+  }
+
+  const rlHeaders = createRateLimitHeaders(rl)
+
   const jsonResponse = (data: unknown, init?: number | ResponseInit) => {
     const status = typeof init === 'number' ? init : init?.status || 200
     const existingHeaders = typeof init === 'object' && init?.headers ? init.headers : {}
@@ -62,6 +81,7 @@ export async function POST(request: NextRequest) {
       status,
       headers: {
         ...existingHeaders,
+        ...rlHeaders,
         'x-correlation-id': correlationId,
       },
     })
@@ -103,7 +123,7 @@ export async function POST(request: NextRequest) {
 
     // When persistence is requested, enforce multi-layer deduplication
     if (reqData.saveExperiment) {
-      const user = await getSessionUser()
+      const user = sessionUser
       const dedupKey = getSimulationDeduplicationKey(user?.id, reqData)
 
       // Layer 1: Check in-flight concurrent execution promise

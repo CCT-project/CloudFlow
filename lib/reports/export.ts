@@ -1,5 +1,10 @@
 import { jsPDF } from 'jspdf'
-import type { ExperimentRecord, PersistedPolicyResult } from '../types/scheduler.ts'
+import type {
+  BatchResearchResponseBody,
+  ExperimentRecord,
+  PersistedPolicyResult,
+  PolicyType,
+} from '../types/scheduler.ts'
 
 /**
  * Escapes values in compliance with RFC-4180 CSV specifications.
@@ -308,4 +313,330 @@ export function downloadExperimentCSV(experiment: ExperimentRecord): void {
 export function downloadExperimentPDF(experiment: ExperimentRecord): void {
   const doc = generateExperimentPDFDoc(experiment)
   doc.save(`cloudflow-experiment-${experiment.id.slice(0, 8)}.pdf`)
+}
+
+/**
+ * Generates an RFC-4180 compliant CSV export for a multi-seed statistical batch research benchmark.
+ */
+export function generateBatchResearchCSV(result: BatchResearchResponseBody): string {
+  const lines: string[] = []
+
+  lines.push('CloudFlow Research Report: Multi-Seed Statistical Benchmark')
+  lines.push('Rigorous Inferential and Descriptive Serverless Scheduling Analysis')
+  lines.push('DISCLAIMER: All values represent deterministic model-based simulation results, NOT real cloud measurements.')
+  lines.push('')
+
+  // Batch Metadata
+  lines.push('=== BENCHMARK METADATA ===')
+  lines.push(`Batch ID,${escapeCSVField(result.batchId)}`)
+  lines.push(`Timestamp,${escapeCSVField(result.timestamp)}`)
+  lines.push(`Total Seeds (k >= 30),${result.metadata.totalSeeds}`)
+  lines.push(`Seeds List,${escapeCSVField(result.metadata.seeds.join('; '))}`)
+  lines.push(`Requests Per Seed,${result.metadata.requestCountPerSeed}`)
+  lines.push(`Total Invocations Evaluated,${result.metadata.totalEvaluations}`)
+  lines.push(`Workload Type,${escapeCSVField(result.metadata.workloadType)}`)
+  lines.push(`Arrival Pattern,${escapeCSVField(result.metadata.arrivalPattern)}`)
+  lines.push(`SLA Latency Threshold (ms),${result.metadata.slaLatencyThresholdMs}`)
+  lines.push(`Execution Time (ms),${result.metadata.executionTimeMs}`)
+  lines.push('')
+
+  // Scientific Methodology
+  lines.push('=== SCIENTIFIC METHODOLOGY ===')
+  lines.push(`Distribution,${escapeCSVField(result.metadata.methodology.distribution)}`)
+  lines.push(`Multiple Testing Correction,${escapeCSVField(result.metadata.methodology.multipleComparisonsCorrection)}`)
+  lines.push(`Confidence Level,${escapeCSVField(result.metadata.methodology.confidenceLevel)}`)
+  lines.push(`Trace Parity,${escapeCSVField(result.metadata.methodology.identicalTraceCondition)}`)
+  lines.push('')
+
+  // Policy Descriptive Statistics Table
+  lines.push('=== POLICY DESCRIPTIVE STATISTICS (95% CONFIDENCE INTERVALS) ===')
+  lines.push([
+    'Policy',
+    'Metric',
+    'Sample Size (n)',
+    'Sample Mean',
+    'Sample Variance',
+    'Standard Deviation',
+    'Standard Error',
+    '95% CI Lower Bound',
+    '95% CI Upper Bound',
+    'Student t Critical (df=n-1)',
+  ].map(escapeCSVField).join(','))
+
+  const policies = Object.keys(result.policyStatistics) as PolicyType[]
+  const metricKeys = [
+    'costUSD',
+    'carbonG',
+    'averageLatencyMs',
+    'p95LatencyMs',
+    'coldStartRatePercent',
+    'slaViolationRatePercent',
+    'averageOverheadMs',
+  ] as const
+
+  for (const pol of policies) {
+    const stats = result.policyStatistics[pol]
+    for (const m of metricKeys) {
+      const metricStat = stats.metrics[m]
+      lines.push([
+        pol,
+        m,
+        metricStat.count,
+        metricStat.mean,
+        metricStat.variance,
+        metricStat.standardDeviation,
+        metricStat.standardError,
+        metricStat.confidenceInterval95[0],
+        metricStat.confidenceInterval95[1],
+        metricStat.criticalT,
+      ].map(escapeCSVField).join(','))
+    }
+  }
+  lines.push('')
+
+  // Paired Hypothesis Tests & Effect Sizes Table
+  lines.push('=== PAIRED STUDENT T-TESTS & HOLM-BONFERRONI CORRECTION ===')
+  lines.push([
+    'Metric',
+    'Baseline Policy Compared',
+    'Adaptive Mean',
+    'Baseline Mean',
+    'Mean Difference (Adaptive - Baseline)',
+    'Percent Difference (%)',
+    'Degrees of Freedom',
+    't-Statistic',
+    'Raw p-Value',
+    'Holm-Bonferroni Adjusted p-Value',
+    'Statistically Significant (alpha=0.05)',
+    "Cohen's dz Effect Size",
+    'Effect Magnitude',
+  ].map(escapeCSVField).join(','))
+
+  for (const comp of result.comparisons) {
+    lines.push([
+      comp.metric,
+      comp.baselinePolicy,
+      comp.adaptiveMean,
+      comp.baselineMean,
+      comp.meanDifference,
+      `${comp.percentDifference}%`,
+      comp.degreesOfFreedom,
+      comp.tStatistic,
+      comp.pValue,
+      comp.adjustedPValue,
+      comp.isStatisticallySignificant ? 'YES' : 'NO',
+      comp.cohensDz,
+      comp.effectSizeMagnitude,
+    ].map(escapeCSVField).join(','))
+  }
+
+  return lines.join('\r\n')
+}
+
+/**
+ * Generates a publication-grade PDF report for a multi-seed batch research benchmark.
+ */
+export function generateBatchResearchPDFDoc(result: BatchResearchResponseBody): jsPDF {
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'pt',
+    format: 'a4',
+  })
+
+  const margin = 40
+  let y = margin
+
+  // Header Banner
+  doc.setFillColor(15, 23, 42) // Slate 900
+  doc.rect(margin, y, 515, 46, 'F')
+
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(14)
+  doc.setTextColor(255, 255, 255)
+  doc.text('CloudFlow Statistical Research Report', margin + 14, y + 20)
+
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(8)
+  doc.setTextColor(148, 163, 184)
+  doc.text(
+    `Batch: ${result.batchId}  |  Seeds: ${result.metadata.totalSeeds}  |  Evaluations: ${result.metadata.totalEvaluations.toLocaleString()}`,
+    margin + 14,
+    y + 35
+  )
+  y += 56
+
+  // Research Disclaimer Banner
+  doc.setFillColor(254, 242, 242) // Red 50
+  doc.rect(margin, y, 515, 20, 'F')
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(7)
+  doc.setTextColor(185, 28, 28) // Red 700
+  doc.text(
+    'DISCLAIMER: All values represent deterministic model-based simulation results, NOT real cloud measurements.',
+    margin + 10,
+    y + 13
+  )
+  y += 30
+
+  // Benchmark Metadata Section
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(10)
+  doc.setTextColor(15, 23, 42)
+  doc.text('1. Multi-Seed Experimental Setup', margin, y)
+  y += 14
+
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(8)
+  doc.setTextColor(71, 85, 105)
+
+  const metaLines = [
+    `Workload: ${result.metadata.workloadType}  |  Arrival Pattern: ${result.metadata.arrivalPattern}  |  SLA Latency Target: ${result.metadata.slaLatencyThresholdMs}ms`,
+    `Independent Seeds: ${result.metadata.totalSeeds} (PRNG: Mulberry32)  |  Requests/Seed: ${result.metadata.requestCountPerSeed}  |  Execution Time: ${result.metadata.executionTimeMs}ms`,
+    `Statistical Methodology: Exact Student's t critical values & 2-tailed p-values via Incomplete Beta; Holm-Bonferroni FWER step-down.`,
+  ]
+  metaLines.forEach((line) => {
+    doc.text(line, margin, y)
+    y += 12
+  })
+  y += 10
+
+  // Policy Performance Table (Mean +/- 95% CI)
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(10)
+  doc.setTextColor(15, 23, 42)
+  doc.text('2. Policy Performance (Sample Mean +/- 95% Confidence Interval)', margin, y)
+  y += 12
+
+  const colWidths = [115, 100, 100, 100, 100]
+  const tableHeaders = ['Policy', 'Cost ($)', 'Carbon (g)', 'Avg Latency (ms)', 'SLA Viol. (%)']
+
+  doc.setFillColor(241, 245, 249)
+  doc.rect(margin, y, 515, 16, 'F')
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(7)
+  doc.setTextColor(71, 85, 105)
+
+  let curX = margin + 6
+  tableHeaders.forEach((h, i) => {
+    doc.text(h, curX, y + 11)
+    curX += colWidths[i]
+  })
+  y += 18
+
+  const policies = Object.keys(result.policyStatistics) as PolicyType[]
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(7)
+
+  for (const pol of policies) {
+    const stats = result.policyStatistics[pol]
+    const isAdaptive = pol === 'CloudFlow adaptive'
+    if (isAdaptive) {
+      doc.setFillColor(236, 253, 245) // Emerald 50
+      doc.rect(margin, y - 2, 515, 15, 'F')
+      doc.setFont('helvetica', 'bold')
+      doc.setTextColor(6, 95, 70)
+    } else {
+      doc.setFont('helvetica', 'normal')
+      doc.setTextColor(30, 41, 59)
+    }
+
+    const costStat = stats.metrics.costUSD
+    const carbonStat = stats.metrics.carbonG
+    const latStat = stats.metrics.averageLatencyMs
+    const slaStat = stats.metrics.slaViolationRatePercent
+
+    const costCi = `[${costStat.confidenceInterval95[0].toFixed(5)}, ${costStat.confidenceInterval95[1].toFixed(5)}]`
+    const carbonCi = `[${carbonStat.confidenceInterval95[0].toFixed(2)}, ${carbonStat.confidenceInterval95[1].toFixed(2)}]`
+    const latCi = `[${latStat.confidenceInterval95[0].toFixed(1)}, ${latStat.confidenceInterval95[1].toFixed(1)}]`
+    const slaCi = `[${slaStat.confidenceInterval95[0].toFixed(1)}%, ${slaStat.confidenceInterval95[1].toFixed(1)}%]`
+
+    const cells = [
+      pol,
+      `$${costStat.mean.toFixed(5)} ${costCi}`,
+      `${carbonStat.mean.toFixed(2)}g ${carbonCi}`,
+      `${latStat.mean.toFixed(1)}ms ${latCi}`,
+      `${slaStat.mean.toFixed(1)}% ${slaCi}`,
+    ]
+
+    curX = margin + 6
+    cells.forEach((c, i) => {
+      doc.text(c, curX, y + 9)
+      curX += colWidths[i]
+    })
+    y += 16
+  }
+
+  y += 14
+
+  // Statistical Comparisons Table
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(10)
+  doc.setTextColor(15, 23, 42)
+  doc.text("3. Paired Student's t-Tests & Holm-Bonferroni Significance (Adaptive vs Baselines)", margin, y)
+  y += 12
+
+  const compWidths = [95, 95, 70, 60, 65, 65, 65]
+  const compHeaders = ['Metric', 'Baseline', 'Diff (%)', 't-Stat', 'p (adj)', "Cohen's dz", 'Significant?']
+
+  doc.setFillColor(241, 245, 249)
+  doc.rect(margin, y, 515, 16, 'F')
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(7)
+  doc.setTextColor(71, 85, 105)
+
+  curX = margin + 6
+  compHeaders.forEach((h, i) => {
+    doc.text(h, curX, y + 11)
+    curX += compWidths[i]
+  })
+  y += 18
+
+  // Sample top 8 key comparisons to fit on page
+  const keyComparisons = result.comparisons.slice(0, 10)
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(7)
+  doc.setTextColor(30, 41, 59)
+
+  for (const comp of keyComparisons) {
+    const row = [
+      comp.metric,
+      comp.baselinePolicy,
+      `${comp.percentDifference > 0 ? '+' : ''}${comp.percentDifference.toFixed(1)}%`,
+      comp.tStatistic.toFixed(2),
+      comp.adjustedPValue < 0.001 ? '< 0.001' : comp.adjustedPValue.toFixed(4),
+      `${comp.cohensDz.toFixed(2)} (${comp.effectSizeMagnitude})`,
+      comp.isStatisticallySignificant ? 'YES (p < 0.05)' : 'NO',
+    ]
+
+    curX = margin + 6
+    row.forEach((cell, i) => {
+      doc.text(cell, curX, y + 9)
+      curX += compWidths[i]
+    })
+    y += 15
+  }
+
+  // Footer
+  doc.setFont('helvetica', 'italic')
+  doc.setFontSize(7)
+  doc.setTextColor(148, 163, 184)
+  doc.text('Generated by CloudFlow Adaptive Serverless Research Engine.', margin, 800)
+
+  return doc
+}
+
+/**
+ * Convenience helper to download CSV for a batch research benchmark.
+ */
+export function downloadBatchResearchCSV(result: BatchResearchResponseBody): void {
+  const csv = generateBatchResearchCSV(result)
+  downloadFile(csv, `cloudflow-batch-research-${result.batchId}.csv`, 'text/csv;charset=utf-8;')
+}
+
+/**
+ * Convenience helper to download PDF for a batch research benchmark.
+ */
+export function downloadBatchResearchPDF(result: BatchResearchResponseBody): void {
+  const doc = generateBatchResearchPDFDoc(result)
+  doc.save(`cloudflow-batch-research-${result.batchId}.pdf`)
 }

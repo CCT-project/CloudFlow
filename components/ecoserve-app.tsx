@@ -38,6 +38,8 @@ import {
 import { AuthModal, UserSession } from '@/components/auth-modal'
 import { MethodologyView } from '@/components/methodology-view'
 import { ResearchView } from '@/components/research-view'
+import { TraceVisualizer } from '@/components/trace-visualizer'
+import { ResearchBenchmark } from '@/components/research-benchmark'
 import {
   Area,
   AreaChart,
@@ -1673,6 +1675,14 @@ function Simulation({
                   View in Policy Comparison <ArrowRight size={13} data-icon="inline-end" />
                 </Button>
               </div>
+
+              {/* Interactive Request Trace Visualizer */}
+              <div className="mt-6">
+                <TraceVisualizer
+                  traces={latestResult?.sampleTraces}
+                  slaLatencyThresholdMs={slaLatencyThresholdMs}
+                />
+              </div>
             </div>
           ) : (
             <div className="grid min-h-72 place-items-center text-center p-8">
@@ -2367,6 +2377,11 @@ function Analytics({ experiments }: { experiments: ExperimentRecord[] }) {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Multi-Seed Batch Research Benchmark (k >= 30) */}
+      <div className="mt-8">
+        <ResearchBenchmark />
       </div>
     </div>
   )

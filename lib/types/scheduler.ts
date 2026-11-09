@@ -263,3 +263,89 @@ export interface SingleExperimentResponseBody {
     }
   }
 }
+
+export type EvaluatedMetric =
+  | 'costUSD'
+  | 'carbonG'
+  | 'averageLatencyMs'
+  | 'p95LatencyMs'
+  | 'coldStartRatePercent'
+  | 'slaViolationRatePercent'
+  | 'averageOverheadMs'
+
+export interface BatchResearchRequestBody {
+  seedCount?: number
+  startingSeed?: number
+  seeds?: number[]
+  requestCount?: number
+  durationMinutes?: number
+  slaLatencyThresholdMs?: number
+  arrivalPattern?: ArrivalPattern
+  workloadType?: WorkloadType
+  adaptiveWeights?: Partial<AdaptiveObjectiveWeights>
+  candidates?: ServerlessCandidate[]
+}
+
+export interface MetricSummaryStatistics {
+  count: number
+  mean: number
+  variance: number
+  standardDeviation: number
+  standardError: number
+  confidenceInterval95: [number, number]
+  criticalT: number
+}
+
+export interface PolicyBatchStatistics {
+  policy: PolicyType
+  sampleSize: number
+  metrics: {
+    costUSD: MetricSummaryStatistics
+    carbonG: MetricSummaryStatistics
+    averageLatencyMs: MetricSummaryStatistics
+    p95LatencyMs: MetricSummaryStatistics
+    coldStartRatePercent: MetricSummaryStatistics
+    slaViolationRatePercent: MetricSummaryStatistics
+    averageOverheadMs: MetricSummaryStatistics
+  }
+}
+
+export interface BatchComparisonItem {
+  metric: EvaluatedMetric
+  baselinePolicy: PolicyType
+  adaptiveMean: number
+  baselineMean: number
+  meanDifference: number
+  percentDifference: number
+  degreesOfFreedom: number
+  tStatistic: number
+  pValue: number
+  adjustedPValue: number
+  isStatisticallySignificant: boolean
+  cohensDz: number
+  effectSizeMagnitude: 'Negligible' | 'Small' | 'Medium' | 'Large'
+}
+
+export interface BatchResearchResponseBody {
+  status: 'success'
+  batchId: string
+  timestamp: string
+  metadata: {
+    totalSeeds: number
+    seeds: number[]
+    requestCountPerSeed: number
+    totalEvaluations: number
+    workloadType: WorkloadType
+    arrivalPattern: ArrivalPattern
+    slaLatencyThresholdMs: number
+    executionTimeMs: number
+    methodology: {
+      distribution: string
+      multipleComparisonsCorrection: string
+      confidenceLevel: string
+      identicalTraceCondition: string
+    }
+  }
+  policyStatistics: Record<PolicyType, PolicyBatchStatistics>
+  comparisons: BatchComparisonItem[]
+}
