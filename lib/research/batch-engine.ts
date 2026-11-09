@@ -23,6 +23,7 @@ import type {
 import { DEFAULT_CANDIDATES } from '../simulation/defaults.ts'
 import { ALL_POLICIES, simulatePolicyOnWorkload } from '../simulation/engine.ts'
 import { DeterministicPRNG, generateWorkloadRequests } from '../simulation/workload.ts'
+import { calculatePooledP95Latency } from '../metrics/calculations.ts'
 import {
   applyHolmBonferroniCorrection,
   calculateDescriptiveStatistics,
@@ -69,6 +70,15 @@ export function runBatchResearch(body: BatchResearchRequestBody): BatchResearchR
     'CloudFlow adaptive': { costUSD: [], carbonG: [], averageLatencyMs: [], p95LatencyMs: [], coldStartRatePercent: [], slaViolationRatePercent: [], averageOverheadMs: [] },
   }
 
+  // Store pooled request-level latencies across all seeds per policy
+  const pooledLatencies: Record<PolicyType, number[]> = {
+    'Latency-first': [],
+    'Cost-first': [],
+    'Carbon-first': [],
+    'Default': [],
+    'CloudFlow adaptive': [],
+  }
+
   // Iterate over every deterministic seed
   for (const seed of seeds) {
     const prng = new DeterministicPRNG(seed)
@@ -83,7 +93,11 @@ export function runBatchResearch(body: BatchResearchRequestBody): BatchResearchR
         candidatePool,
         slaLatencyThresholdMs,
         body.adaptiveWeights,
-        seed
+        seed,
+        {
+          maxInstancesPerCandidate: body.maxInstancesPerCandidate,
+          coldStartTimeoutMs: body.coldStartTimeoutMs,
+        }
       )
 
       const s = result.summary
@@ -94,6 +108,10 @@ export function runBatchResearch(body: BatchResearchRequestBody): BatchResearchR
       policySamples[policy].coldStartRatePercent.push(s.coldStartRatePercent)
       policySamples[policy].slaViolationRatePercent.push(s.slaViolationRatePercent)
       policySamples[policy].averageOverheadMs.push(s.averageOverheadMs)
+
+      if (result.latencies && result.latencies.length > 0) {
+        pooledLatencies[policy].push(...result.latencies)
+      }
     }
   }
 
@@ -104,6 +122,10 @@ export function runBatchResearch(body: BatchResearchRequestBody): BatchResearchR
     policyStatistics[policy] = {
       policy,
       sampleSize: seeds.length,
+      pooledP95LatencyMs:
+        pooledLatencies[policy].length > 0
+          ? calculatePooledP95Latency(pooledLatencies[policy])
+          : undefined,
       metrics: {
         costUSD: calculateDescriptiveStatistics(policySamples[policy].costUSD),
         carbonG: calculateDescriptiveStatistics(policySamples[policy].carbonG),

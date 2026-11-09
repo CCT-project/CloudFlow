@@ -24,6 +24,8 @@ export interface ServerlessCandidate {
   carbonIntensityGPerKwh: number
   activeInstances: number
   isWarm: boolean
+  maxInstances?: number
+  concurrencyPerInstance?: number
 }
 
 export interface SchedulingConstraints {
@@ -63,6 +65,8 @@ export interface WorkloadSimulationConfig {
   slaLatencyThresholdMs: number
   arrivalPattern: ArrivalPattern
   policiesToEvaluate: PolicyType[]
+  maxInstancesPerCandidate?: number
+  coldStartTimeoutMs?: number
 }
 
 export interface PolicyPerformanceSummary {
@@ -75,6 +79,11 @@ export interface PolicyPerformanceSummary {
   coldStartRatePercent: number
   slaViolationRatePercent: number
   averageOverheadMs: number
+  averageExecutionDurationMs?: number
+  averageQueueingDelayMs?: number
+  averageColdStartDelayMs?: number
+  maxConcurrency?: number
+  containerUtilizationPercent?: number
 }
 
 export interface ExperimentRun {
@@ -113,6 +122,8 @@ export interface SimulateRequestBody {
   adaptiveWeights?: Partial<AdaptiveObjectiveWeights>
   saveExperiment?: boolean
   experimentName?: string
+  maxInstancesPerCandidate?: number
+  coldStartTimeoutMs?: number
 }
 
 export interface SimulatedRequestTrace {
@@ -125,6 +136,9 @@ export interface SimulatedRequestTrace {
   meetsSLA: boolean
   selectedCandidateId: string
   selectedCandidateName: string
+  executionDurationMs?: number
+  queueingDelayMs?: number
+  coldStartDelayMs?: number
 }
 
 export interface SimulateResponseBody {
@@ -137,6 +151,7 @@ export interface SimulateResponseBody {
   policySummaries?: Partial<Record<PolicyType, PolicyPerformanceSummary>>
   simulationAssumptions: {
     prng: string
+    concurrencyModel?: string
     latencyModel: string
     costModel: string
     carbonModel: string
@@ -153,6 +168,9 @@ export interface ScheduleEvaluateRequestBody {
   slaLatencyThresholdMs: number
   candidates: ServerlessCandidate[]
   executionDurationMs?: number
+  expectedExecutionDurationMs?: number
+  latencyMarginMs?: number
+  workloadType?: WorkloadType
   isColdStart?: boolean
   adaptiveWeights?: Partial<AdaptiveObjectiveWeights>
 }
@@ -205,6 +223,7 @@ export interface ExperimentRecord {
   weights: AdaptiveObjectiveWeights
   assumptions: {
     prng: string
+    concurrencyModel?: string
     latencyModel: string
     costModel: string
     carbonModel: string
@@ -227,6 +246,7 @@ export interface CreateExperimentRequestBody {
   adaptiveWeights?: Partial<AdaptiveObjectiveWeights>
   simulationAssumptions?: {
     prng?: string
+    concurrencyModel?: string
     latencyModel?: string
     costModel?: string
     carbonModel?: string
@@ -284,6 +304,8 @@ export interface BatchResearchRequestBody {
   workloadType?: WorkloadType
   adaptiveWeights?: Partial<AdaptiveObjectiveWeights>
   candidates?: ServerlessCandidate[]
+  maxInstancesPerCandidate?: number
+  coldStartTimeoutMs?: number
 }
 
 export interface MetricSummaryStatistics {
@@ -299,6 +321,7 @@ export interface MetricSummaryStatistics {
 export interface PolicyBatchStatistics {
   policy: PolicyType
   sampleSize: number
+  pooledP95LatencyMs?: number
   metrics: {
     costUSD: MetricSummaryStatistics
     carbonG: MetricSummaryStatistics

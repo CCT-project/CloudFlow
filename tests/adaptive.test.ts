@@ -255,3 +255,151 @@ test('Adaptive Policy: Rejects candidate with missing or invalid metrics', () =>
     /invalid baseLatencyMs/
   )
 })
+
+test('Adaptive Policy: SLA feasibility accounts for executionDurationMs and latencyMarginMs', () => {
+  const candidate: ServerlessCandidate = {
+    id: 'c-test',
+    name: 'Test Candidate',
+    provider: 'AWS',
+    region: 'us-east-1',
+    baseLatencyMs: 140,
+    coldStartLatencyMs: 200,
+    costPerMsUSD: 0.00002,
+    carbonIntensityGPerKwh: 300,
+    activeInstances: 10,
+    isWarm: true,
+  }
+
+  // Base 140ms + execution 150ms + margin 10ms = 300ms
+  // If SLA is 280ms, it should be REJECTED (infeasible)
+  const resultInfeasible = evaluateAdaptivePolicy({
+    slaLatencyThresholdMs: 280,
+    candidates: [candidate],
+    executionDurationMs: 150,
+    latencyMarginMs: 10,
+  })
+  assert.equal(resultInfeasible.isSlaSatisfied, false)
+  assert.equal(resultInfeasible.evaluations[0].slaFeasible, false)
+  assert.equal(resultInfeasible.evaluations[0].estimatedLatencyMs, 300)
+
+  // If SLA is 320ms, it should be ELIGIBLE (feasible)
+  const resultFeasible = evaluateAdaptivePolicy({
+    slaLatencyThresholdMs: 320,
+    candidates: [candidate],
+    executionDurationMs: 150,
+    latencyMarginMs: 10,
+  })
+  assert.equal(resultFeasible.isSlaSatisfied, true)
+  assert.equal(resultFeasible.evaluations[0].slaFeasible, true)
+  assert.equal(resultFeasible.evaluations[0].estimatedLatencyMs, 300)
+})
+
+test('Adaptive Policy: Cold start latency pushes cold candidates out of SLA feasibility', () => {
+  const candidates: ServerlessCandidate[] = [
+    {
+      id: 'c-warm',
+      name: 'Warm Candidate',
+      provider: 'AWS',
+      region: 'us-east-1',
+      baseLatencyMs: 160,
+      coldStartLatencyMs: 200,
+      costPerMsUSD: 0.000025,
+      carbonIntensityGPerKwh: 300,
+      activeInstances: 10,
+      isWarm: true,
+    },
+    {
+      id: 'c-cold',
+      name: 'Cold Candidate (Lower Cost)',
+      provider: 'GCP',
+      region: 'us-central1',
+      baseLatencyMs: 150,
+      coldStartLatencyMs: 200,
+      costPerMsUSD: 0.00001, // Cheaper!
+      carbonIntensityGPerKwh: 300,
+      activeInstances: 0,
+      isWarm: false, // Cold!
+    },
+  ]
+
+  // With SLA 300ms, execution 100ms:
+  // c-warm: 160 + 0 + 100 = 260ms <= 300ms (Feasible)
+  // c-cold: 150 + 200 + 100 = 450ms > 300ms (Infeasible due to cold start)
+  const result = evaluateAdaptivePolicy({
+    slaLatencyThresholdMs: 300,
+    candidates,
+    executionDurationMs: 100,
+  })
+
+  assert.equal(result.isSlaSatisfied, true)
+  assert.equal(result.selectedCandidate?.id, 'c-warm')
+  const coldEval = result.evaluations.find((e) => e.candidate.id === 'c-cold')
+  assert.equal(coldEval?.slaFeasible, false)
+  assert.equal(coldEval?.decision, 'Rejected: SLA Constraint')
+})
+
+test('Adaptive Policy: Workload type estimate is resolved when executionDurationMs is omitted', () => {
+  const candidate: ServerlessCandidate = {
+    id: 'c-workload',
+    name: 'Workload Candidate',
+    provider: 'AWS',
+    region: 'us-east-1',
+    baseLatencyMs: 100,
+    coldStartLatencyMs: 200,
+    costPerMsUSD: 0.00002,
+    carbonIntensityGPerKwh: 200,
+    activeInstances: 10,
+    isWarm: true,
+  }
+
+  // Workload 'High' defaults to 200ms execution duration: 100 + 200 = 300ms
+  const result = evaluateAdaptivePolicy({
+    slaLatencyThresholdMs: 250,
+    candidates: [candidate],
+    workloadType: 'High',
+  })
+  assert.equal(result.isSlaSatisfied, false)
+  assert.equal(result.evaluations[0].estimatedLatencyMs, 300)
+})
+
+test('Adaptive Policy: Relaxed SLA admits broader candidate pool and optimizes cost and carbon', () => {
+  const candidates: ServerlessCandidate[] = [
+    {
+      id: 'fast-dirty-expensive',
+      name: 'Fast Region',
+      provider: 'AWS',
+      region: 'us-east-1',
+      baseLatencyMs: 100,
+      coldStartLatencyMs: 150,
+      costPerMsUSD: 0.00005,
+      carbonIntensityGPerKwh: 450,
+      activeInstances: 10,
+      isWarm: true,
+    },
+    {
+      id: 'slower-clean-cheap',
+      name: 'Green Region',
+      provider: 'Azure',
+      region: 'norway-east',
+      baseLatencyMs: 200,
+      coldStartLatencyMs: 150,
+      costPerMsUSD: 0.00001,
+      carbonIntensityGPerKwh: 30,
+      activeInstances: 10,
+      isWarm: true,
+    },
+  ]
+
+  // Relaxed SLA = 400ms, executionDuration = 100ms
+  // Fast: 100 + 100 = 200ms <= 400ms (Feasible)
+  // Green: 200 + 100 = 300ms <= 400ms (Feasible)
+  // Multi-objective scoring should favor 'slower-clean-cheap'
+  const result = evaluateAdaptivePolicy({
+    slaLatencyThresholdMs: 400,
+    candidates,
+    executionDurationMs: 100,
+  })
+
+  assert.equal(result.isSlaSatisfied, true)
+  assert.equal(result.selectedCandidate?.id, 'slower-clean-cheap')
+})

@@ -71,6 +71,12 @@ export function calculateP95Latency(latencies: number[]): number {
 }
 
 /**
+ * Calculates pooled empirical 95th percentile latency across concatenated request-level traces.
+ * Statistically preferred over averaging sample P95s across seeds due to non-linearity of percentiles.
+ */
+export const calculatePooledP95Latency = calculateP95Latency
+
+/**
  * 5. Cold-Start Rate (%)
  * Formula: (coldStartsCount / totalRequests) * 100
  */

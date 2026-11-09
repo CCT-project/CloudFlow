@@ -3,14 +3,22 @@ import type {
   CandidateEvaluationResult,
   ScheduleEvaluateResponseBody,
   ServerlessCandidate,
+  WorkloadType,
 } from '../types/scheduler.ts'
 import { DEFAULT_ADAPTIVE_WEIGHTS } from '../types/scheduler.ts'
 import { calculateCarbonEmissions, calculateExecutionCost } from '../metrics/calculations.ts'
+import {
+  resolveExpectedExecutionDuration,
+  resolveLatencyMargin,
+} from '../simulation/workload.ts'
 
 export interface AdaptiveEvaluationOptions {
   slaLatencyThresholdMs: number
   candidates: ServerlessCandidate[]
   executionDurationMs?: number
+  expectedExecutionDurationMs?: number
+  latencyMarginMs?: number
+  workloadType?: WorkloadType
   isColdStart?: boolean
   adaptiveWeights?: Partial<AdaptiveObjectiveWeights>
 }
@@ -108,7 +116,6 @@ export function evaluateAdaptivePolicy(options: AdaptiveEvaluationOptions): Sche
   const {
     slaLatencyThresholdMs,
     candidates,
-    executionDurationMs = 120,
     isColdStart = false,
     adaptiveWeights,
   } = options
@@ -116,6 +123,12 @@ export function evaluateAdaptivePolicy(options: AdaptiveEvaluationOptions): Sche
   if (!candidates || candidates.length === 0) {
     throw new Error('At least one candidate is required for adaptive evaluation.')
   }
+
+  // Resolve expected execution duration and safety latency margin
+  const expectedDuration = resolveExpectedExecutionDuration(options)
+  const latencyMargin = resolveLatencyMargin(options.latencyMarginMs)
+  const costExecutionDurationMs =
+    options.executionDurationMs ?? (expectedDuration > 0 ? expectedDuration : 120)
 
   // Validate weights
   const weights = validateAdaptiveWeights(adaptiveWeights)
@@ -139,9 +152,13 @@ export function evaluateAdaptivePolicy(options: AdaptiveEvaluationOptions): Sche
   // Stage A: Compute raw metrics & SLA feasibility
   const intermediates: IntermediateEvaluation[] = candidates.map((cand) => {
     const coldAdded = isColdStart || !cand.isWarm ? cand.coldStartLatencyMs : 0
-    const estimatedLatencyMs = cand.baseLatencyMs + coldAdded
-    const estimatedCostUSD = calculateExecutionCost(executionDurationMs, cand.costPerMsUSD)
-    const estimatedCarbonG = calculateCarbonEmissions(executionDurationMs, cand.carbonIntensityGPerKwh)
+    const estimatedLatencyMs =
+      cand.baseLatencyMs + coldAdded + expectedDuration + latencyMargin
+    const estimatedCostUSD = calculateExecutionCost(costExecutionDurationMs, cand.costPerMsUSD)
+    const estimatedCarbonG = calculateCarbonEmissions(
+      costExecutionDurationMs,
+      cand.carbonIntensityGPerKwh
+    )
 
     const coldStartRisk: 'Low' | 'Medium' | 'High' = !cand.isWarm
       ? 'High'

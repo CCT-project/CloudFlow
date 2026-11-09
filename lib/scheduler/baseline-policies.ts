@@ -4,15 +4,23 @@ import type {
   PolicyType,
   ScheduleEvaluateResponseBody,
   ServerlessCandidate,
+  WorkloadType,
 } from '../types/scheduler.ts'
 import { calculateCarbonEmissions, calculateExecutionCost } from '../metrics/calculations.ts'
 import { evaluateAdaptivePolicy } from './adaptive-policy.ts'
+import {
+  resolveExpectedExecutionDuration,
+  resolveLatencyMargin,
+} from '../simulation/workload.ts'
 
 export interface PolicyEvaluationOptions {
   policy: PolicyType
   slaLatencyThresholdMs: number
   candidates: ServerlessCandidate[]
   executionDurationMs?: number
+  expectedExecutionDurationMs?: number
+  latencyMarginMs?: number
+  workloadType?: WorkloadType
   isColdStart?: boolean
   adaptiveWeights?: Partial<AdaptiveObjectiveWeights>
 }
@@ -33,7 +41,6 @@ export function evaluateBaselinePolicy(options: PolicyEvaluationOptions): Schedu
     policy,
     slaLatencyThresholdMs,
     candidates,
-    executionDurationMs = 120,
     isColdStart = false,
     adaptiveWeights,
   } = options
@@ -43,7 +50,10 @@ export function evaluateBaselinePolicy(options: PolicyEvaluationOptions): Schedu
     return evaluateAdaptivePolicy({
       slaLatencyThresholdMs,
       candidates,
-      executionDurationMs,
+      executionDurationMs: options.executionDurationMs,
+      expectedExecutionDurationMs: options.expectedExecutionDurationMs,
+      latencyMarginMs: options.latencyMarginMs,
+      workloadType: options.workloadType,
       isColdStart,
       adaptiveWeights,
     })
@@ -55,12 +65,22 @@ export function evaluateBaselinePolicy(options: PolicyEvaluationOptions): Schedu
     throw new Error('At least one candidate is required for evaluation.')
   }
 
+  // Resolve expected execution duration and safety latency margin
+  const expectedDuration = resolveExpectedExecutionDuration(options)
+  const latencyMargin = resolveLatencyMargin(options.latencyMarginMs)
+  const costExecutionDurationMs =
+    options.executionDurationMs ?? (expectedDuration > 0 ? expectedDuration : 120)
+
   // 1. Evaluate individual candidate metrics
   const evaluations: CandidateEvaluationResult[] = candidates.map((cand) => {
     const coldAdded = isColdStart || !cand.isWarm ? cand.coldStartLatencyMs : 0
-    const estimatedLatencyMs = cand.baseLatencyMs + coldAdded
-    const estimatedCostUSD = calculateExecutionCost(executionDurationMs, cand.costPerMsUSD)
-    const estimatedCarbonG = calculateCarbonEmissions(executionDurationMs, cand.carbonIntensityGPerKwh)
+    const estimatedLatencyMs =
+      cand.baseLatencyMs + coldAdded + expectedDuration + latencyMargin
+    const estimatedCostUSD = calculateExecutionCost(costExecutionDurationMs, cand.costPerMsUSD)
+    const estimatedCarbonG = calculateCarbonEmissions(
+      costExecutionDurationMs,
+      cand.carbonIntensityGPerKwh
+    )
 
     const coldStartRisk: 'Low' | 'Medium' | 'High' = !cand.isWarm
       ? 'High'

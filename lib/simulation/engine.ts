@@ -31,10 +31,33 @@ export const ALL_POLICIES: PolicyType[] = [
 export interface PolicySimulationResult {
   summary: PolicyPerformanceSummary
   traces: SimulatedRequestTrace[]
+  latencies: number[]
+}
+
+export interface SimulationOptions {
+  maxInstancesPerCandidate?: number
+  coldStartTimeoutMs?: number
+}
+
+interface ContainerInstance {
+  id: string
+  busyUntilMs: number
+  lastUsedMs: number
+}
+
+interface CandidatePoolState {
+  candidate: ServerlessCandidate
+  maxInstances: number
+  instances: ContainerInstance[]
 }
 
 /**
- * Simulates a single policy over an exact, predetermined sequence of synthetic requests.
+ * Simulates a single policy over an exact, predetermined sequence of synthetic requests
+ * using a realistic discrete-event container lifecycle and finite concurrency model:
+ * - Tracks container instance allocation, reuse, and idle expiration.
+ * - Concurrency cold starts emerge naturally when concurrent requests arrive while existing instances are busy.
+ * - Queueing delays emerge when the configured candidate capacity limit is reached.
+ * - Total latency = baseLatency + queueingDelay + coldStartDelay + executionDuration + jitter (no double-counting).
  */
 export function simulatePolicyOnWorkload(
   requests: SyntheticRequest[],
@@ -42,19 +65,38 @@ export function simulatePolicyOnWorkload(
   candidatePool: ServerlessCandidate[],
   slaLatencyThresholdMs: number,
   adaptiveWeights?: Partial<AdaptiveObjectiveWeights>,
-  seed: number = 4242
+  seed: number = 4242,
+  options?: SimulationOptions
 ): PolicySimulationResult {
   // PRNG instance for reproducible jitter
   const jitterPrng = new DeterministicPRNG(seed + policy.length * 101)
 
-  // Track state of candidate warm pools (last used timestamp)
-  const candidateLastUsed: Record<string, number> = {}
-  candidatePool.forEach((c) => {
-    candidateLastUsed[c.id] = c.isWarm ? 0 : -9999999
-  })
+  // Cold start idle window: 10 minutes (600,000 ms) default, or configurable
+  const COLD_START_TIMEOUT_MS = options?.coldStartTimeoutMs ?? 10 * 60 * 1000
 
-  // Cold start idle window: 10 minutes (600,000 ms)
-  const COLD_START_TIMEOUT_MS = 10 * 60 * 1000
+  // Initialize candidate container pools
+  const pools: Record<string, CandidatePoolState> = {}
+  candidatePool.forEach((c) => {
+    const maxInstances =
+      c.maxInstances ?? options?.maxInstancesPerCandidate ?? Math.max(10, c.activeInstances * 2)
+    const initialInstances: ContainerInstance[] = []
+    if (c.isWarm) {
+      // Provision realistic initial warm container instances (e.g. up to 2 provisioned containers)
+      const warmCount = Math.min(2, Math.max(1, c.activeInstances))
+      for (let i = 0; i < warmCount; i++) {
+        initialInstances.push({
+          id: `${c.id}-init-${i}`,
+          busyUntilMs: 0,
+          lastUsedMs: 0,
+        })
+      }
+    }
+    pools[c.id] = {
+      candidate: c,
+      maxInstances,
+      instances: initialInstances,
+    }
+  })
 
   const latencies: number[] = []
   let totalCostUSD = 0
@@ -62,28 +104,43 @@ export function simulatePolicyOnWorkload(
   let coldStartsCount = 0
   let slaViolationsCount = 0
   let totalOverheadMs = 0
+  let totalQueueingDelayMs = 0
+  let totalColdStartDelayMs = 0
+  let totalExecutionDurationMs = 0
+  let maxConcurrency = 0
 
   const traces: SimulatedRequestTrace[] = []
   const maxSampleTraces = Math.min(requests.length, 50)
 
   for (const req of requests) {
-    // Determine warm status for all candidates at this arrival time
+    // 1. Maintain candidate pools at this arrival timestamp: expire idle containers (> COLD_START_TIMEOUT_MS)
+    for (const pool of Object.values(pools)) {
+      pool.instances = pool.instances.filter((inst) => {
+        const isBusy = inst.busyUntilMs > req.arrivalTimeMs
+        const idleDuration = req.arrivalTimeMs - inst.lastUsedMs
+        return isBusy || idleDuration <= COLD_START_TIMEOUT_MS
+      })
+    }
+
+    // 2. Determine candidate warm availability at current arrival time
     const dynamicCandidates: ServerlessCandidate[] = candidatePool.map((c) => {
-      const lastUsed = candidateLastUsed[c.id] ?? -9999999
-      const idleTime = req.arrivalTimeMs - lastUsed
-      const isWarm = idleTime <= COLD_START_TIMEOUT_MS
+      const pool = pools[c.id]
+      const idleCount = pool.instances.filter((i) => i.busyUntilMs <= req.arrivalTimeMs).length
+      const canServeWarm = idleCount > 0
       return {
         ...c,
-        isWarm,
+        isWarm: canServeWarm,
+        activeInstances: pool.instances.length,
       }
     })
 
-    // Evaluate policy
+    // 3. Evaluate policy
     const evaluation = evaluateBaselinePolicy({
       policy,
       slaLatencyThresholdMs,
       candidates: dynamicCandidates,
       executionDurationMs: req.executionDurationMs,
+      latencyMarginMs: 7.5,
       isColdStart: false,
       adaptiveWeights,
     })
@@ -91,25 +148,69 @@ export function simulatePolicyOnWorkload(
     totalOverheadMs += evaluation.schedulingOverheadMs
 
     let chosenCandidate = evaluation.selectedCandidate
-    let meetsSLA = evaluation.isSlaSatisfied
-
     if (!chosenCandidate) {
-      // Pick best effort fallback if none returned
       chosenCandidate = dynamicCandidates[0]
-      meetsSLA = false
     }
 
-    const wasCold = !chosenCandidate.isWarm
-    if (wasCold) {
+    // 4. Allocate container instance from chosen candidate's pool
+    const pool = pools[chosenCandidate.id]
+    const idleInstances = pool.instances.filter((i) => i.busyUntilMs <= req.arrivalTimeMs)
+
+    let queueingDelayMs = 0
+    let coldStartDelayMs = 0
+    let wasCold = false
+    let startTimeMs = req.arrivalTimeMs
+
+    if (idleInstances.length > 0) {
+      // Warm reuse
+      wasCold = false
+      const inst = idleInstances[0]
+      startTimeMs = req.arrivalTimeMs
+      inst.busyUntilMs = startTimeMs + req.executionDurationMs
+      inst.lastUsedMs = inst.busyUntilMs
+    } else if (pool.instances.length < pool.maxInstances) {
+      // Concurrency Cold Start: scale out a new container instance
+      wasCold = true
       coldStartsCount++
+      coldStartDelayMs = chosenCandidate.coldStartLatencyMs
+      startTimeMs = req.arrivalTimeMs + coldStartDelayMs
+      const newInst: ContainerInstance = {
+        id: `${chosenCandidate.id}-inst-${pool.instances.length + 1}`,
+        busyUntilMs: startTimeMs + req.executionDurationMs,
+        lastUsedMs: startTimeMs + req.executionDurationMs,
+      }
+      pool.instances.push(newInst)
+    } else {
+      // Capacity Saturation / Queueing Delay: wait for earliest instance to finish
+      wasCold = false
+      pool.instances.sort((a, b) => a.busyUntilMs - b.busyUntilMs)
+      const earliest = pool.instances[0]
+      queueingDelayMs = Math.max(0, earliest.busyUntilMs - req.arrivalTimeMs)
+      startTimeMs = req.arrivalTimeMs + queueingDelayMs
+      earliest.busyUntilMs = startTimeMs + req.executionDurationMs
+      earliest.lastUsedMs = earliest.busyUntilMs
     }
 
-    // Actual request latency with bounded jitter (+/- 7.5ms)
+    totalQueueingDelayMs += queueingDelayMs
+    totalColdStartDelayMs += coldStartDelayMs
+    totalExecutionDurationMs += req.executionDurationMs
+
+    // Track active concurrency across all candidate pools
+    const activeConcurrency = Object.values(pools).reduce(
+      (sum, p) => sum + p.instances.filter((i) => i.busyUntilMs > req.arrivalTimeMs).length,
+      0
+    )
+    if (activeConcurrency > maxConcurrency) {
+      maxConcurrency = activeConcurrency
+    }
+
+    // 5. Total request latency: base network + queueing + cold start + execution duration + jitter
     const latencyJitter = (jitterPrng.next() - 0.5) * 15
     const totalLatency = Math.max(
       20,
       chosenCandidate.baseLatencyMs +
-        (wasCold ? chosenCandidate.coldStartLatencyMs : 0) +
+        queueingDelayMs +
+        coldStartDelayMs +
         req.executionDurationMs +
         latencyJitter
     )
@@ -128,9 +229,6 @@ export function simulatePolicyOnWorkload(
     totalCarbonG += carbon
     latencies.push(totalLatency)
 
-    // Update container warm pool timestamp
-    candidateLastUsed[chosenCandidate.id] = req.arrivalTimeMs + totalLatency
-
     if (req.id <= maxSampleTraces) {
       traces.push({
         requestId: req.id,
@@ -142,6 +240,9 @@ export function simulatePolicyOnWorkload(
         meetsSLA: totalLatency <= slaLatencyThresholdMs,
         selectedCandidateId: chosenCandidate.id,
         selectedCandidateName: chosenCandidate.name,
+        executionDurationMs: req.executionDurationMs,
+        queueingDelayMs: Number(queueingDelayMs.toFixed(1)),
+        coldStartDelayMs: Number(coldStartDelayMs.toFixed(1)),
       })
     }
   }
@@ -151,6 +252,9 @@ export function simulatePolicyOnWorkload(
   const coldStartRatePercent = calculateColdStartRate(coldStartsCount, requests.length)
   const slaViolationRatePercent = calculateSlaViolationRate(slaViolationsCount, requests.length)
   const averageOverheadMs = Number((totalOverheadMs / requests.length).toFixed(3))
+  const averageExecutionDurationMs = Number((totalExecutionDurationMs / requests.length).toFixed(1))
+  const averageQueueingDelayMs = Number((totalQueueingDelayMs / requests.length).toFixed(2))
+  const averageColdStartDelayMs = Number((totalColdStartDelayMs / requests.length).toFixed(2))
 
   const summary: PolicyPerformanceSummary = {
     policy,
@@ -162,9 +266,13 @@ export function simulatePolicyOnWorkload(
     coldStartRatePercent,
     slaViolationRatePercent,
     averageOverheadMs,
+    averageExecutionDurationMs,
+    averageQueueingDelayMs,
+    averageColdStartDelayMs,
+    maxConcurrency,
   }
 
-  return { summary, traces }
+  return { summary, traces, latencies }
 }
 
 /**
@@ -209,7 +317,11 @@ export function runSimulation(body: SimulateRequestBody): SimulateResponseBody {
       candidatePool,
       slaLatencyThresholdMs,
       body.adaptiveWeights,
-      seed
+      seed,
+      {
+        maxInstancesPerCandidate: body.maxInstancesPerCandidate,
+        coldStartTimeoutMs: body.coldStartTimeoutMs,
+      }
     )
     policySummaries[pol] = res.summary
 
@@ -234,12 +346,13 @@ export function runSimulation(body: SimulateRequestBody): SimulateResponseBody {
     summary: primaryResult!.summary,
     policySummaries,
     simulationAssumptions: {
-      prng: 'Deterministic Mulberry32 algorithm with reproducible seed',
-      latencyModel: 'Base regional latency + synthetic duration + cold start delay (if cold) + bounded jitter (+/- 7.5ms)',
+      prng: 'Deterministic Mulberry32 algorithm with independent decoupled streams for arrival times and execution durations',
+      concurrencyModel: 'Discrete-event container instance pool with concurrency scale-out, warm reuse, finite capacity queueing, and 10-minute idle expiration',
+      latencyModel: 'Base regional latency + queueing delay + cold start delay (if container scale-out) + execution duration + bounded jitter (+/- 7.5ms)',
       costModel: 'Calculated using durationMs * costPerMsUSD + standard invocation fee ($0.0000002)',
       carbonModel: 'Calculated from 35W container power estimate * duration * regional grid carbon intensity (g CO2e/kWh)',
-      coldStartModel: '10-minute idle container expiration timeout based on request arrival timestamp intervals',
-      adaptivePolicyModel: 'Two-stage multi-objective optimization: Stage A filters for SLA feasibility; Stage B minimizes normalized score = alpha*Cost + beta*Carbon + gamma*Latency + delta*ColdRisk',
+      coldStartModel: '10-minute idle container expiration timeout and concurrency cold-starts when concurrent requests exceed warm instances',
+      adaptivePolicyModel: 'Two-stage multi-objective optimization: Stage A filters for SLA feasibility including execution duration; Stage B minimizes normalized score = alpha*Cost + beta*Carbon + gamma*Latency + delta*ColdRisk',
     },
     sampleTraces: primaryResult!.traces,
   }
