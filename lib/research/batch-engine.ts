@@ -15,15 +15,17 @@ import type {
   BatchComparisonItem,
   BatchResearchRequestBody,
   BatchResearchResponseBody,
+  ContainerLifecycleEvent,
   EvaluatedMetric,
   PolicyBatchStatistics,
   PolicyType,
   ServerlessCandidate,
+  SimulatedRequestTrace,
 } from '../types/scheduler.ts'
 import { DEFAULT_CANDIDATES } from '../simulation/defaults.ts'
 import { ALL_POLICIES, simulatePolicyOnWorkload } from '../simulation/engine.ts'
 import { DeterministicPRNG, generateWorkloadRequests } from '../simulation/workload.ts'
-import { calculatePooledP95Latency } from '../metrics/calculations.ts'
+import { calculatePercentile, calculatePooledP95Latency } from '../metrics/calculations.ts'
 import {
   applyHolmBonferroniCorrection,
   calculateDescriptiveStatistics,
@@ -78,6 +80,8 @@ export function runBatchResearch(body: BatchResearchRequestBody): BatchResearchR
     'Default': [],
     'CloudFlow adaptive': [],
   }
+  let representativeTraces: SimulatedRequestTrace[] | undefined
+  let representativeLifecycleEvents: ContainerLifecycleEvent[] | undefined
 
   // Iterate over every deterministic seed
   for (const seed of seeds) {
@@ -100,6 +104,11 @@ export function runBatchResearch(body: BatchResearchRequestBody): BatchResearchR
         }
       )
 
+      if (seed === seeds[0] && policy === 'CloudFlow adaptive') {
+        representativeTraces = result.traces
+        representativeLifecycleEvents = result.lifecycleEvents
+      }
+
       const s = result.summary
       policySamples[policy].costUSD.push(s.totalCostUSD)
       policySamples[policy].carbonG.push(s.totalCarbonG)
@@ -119,12 +128,20 @@ export function runBatchResearch(body: BatchResearchRequestBody): BatchResearchR
   const policyStatistics = {} as Record<PolicyType, PolicyBatchStatistics>
 
   for (const policy of ALL_POLICIES) {
+    const latList = pooledLatencies[policy]
     policyStatistics[policy] = {
       policy,
       sampleSize: seeds.length,
       pooledP95LatencyMs:
-        pooledLatencies[policy].length > 0
-          ? calculatePooledP95Latency(pooledLatencies[policy])
+        latList.length > 0 ? calculatePooledP95Latency(latList) : undefined,
+      pooledQuantiles:
+        latList.length > 0
+          ? {
+              p50: calculatePercentile(latList, 50),
+              p90: calculatePercentile(latList, 90),
+              p95: calculatePercentile(latList, 95),
+              p99: calculatePercentile(latList, 99),
+            }
           : undefined,
       metrics: {
         costUSD: calculateDescriptiveStatistics(policySamples[policy].costUSD),
@@ -135,6 +152,23 @@ export function runBatchResearch(body: BatchResearchRequestBody): BatchResearchR
         slaViolationRatePercent: calculateDescriptiveStatistics(policySamples[policy].slaViolationRatePercent),
         averageOverheadMs: calculateDescriptiveStatistics(policySamples[policy].averageOverheadMs),
       },
+    }
+  }
+
+  // Downsample pooled request observations for client-side empirical histogram / CDF rendering (cap 1500)
+  const sampleLimit = 1500
+  const latencyObservations: Partial<Record<PolicyType, number[]>> = {}
+  for (const policy of ALL_POLICIES) {
+    const raw = pooledLatencies[policy]
+    if (raw.length <= sampleLimit) {
+      latencyObservations[policy] = raw
+    } else {
+      const step = raw.length / sampleLimit
+      const sampled: number[] = []
+      for (let i = 0; i < sampleLimit; i++) {
+        sampled.push(raw[Math.floor(i * step)])
+      }
+      latencyObservations[policy] = sampled
     }
   }
 
@@ -202,5 +236,8 @@ export function runBatchResearch(body: BatchResearchRequestBody): BatchResearchR
     },
     policyStatistics,
     comparisons,
+    latencyObservations,
+    representativeTraces,
+    representativeLifecycleEvents,
   }
 }

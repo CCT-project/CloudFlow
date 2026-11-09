@@ -377,3 +377,100 @@ export function applyHolmBonferroniCorrection(
   indexed.sort((a, b) => a.originalIndex - b.originalIndex)
   return indexed.map((item) => item.comp)
 }
+
+export interface CohenDzConfidenceInterval {
+  cohensDz: number
+  standardError: number
+  criticalT: number
+  ciLower: number
+  ciUpper: number
+}
+
+/**
+ * Computes exact 95% Confidence Interval for paired Cohen's dz effect size.
+ * Uses Hedges & Olkin asymptotic variance: SE(dz) = sqrt( 1/n + dz^2 / (2n) ).
+ */
+export function calculateCohenDzConfidenceInterval(
+  cohensDz: number,
+  degreesOfFreedom: number,
+  alpha: number = 0.05
+): CohenDzConfidenceInterval {
+  const n = degreesOfFreedom + 1
+  if (n <= 1) {
+    return {
+      cohensDz: Number(cohensDz.toFixed(4)),
+      standardError: 0,
+      criticalT: 1.96,
+      ciLower: Number(cohensDz.toFixed(4)),
+      ciUpper: Number(cohensDz.toFixed(4)),
+    }
+  }
+
+  const variance = (1 / n) + (Math.pow(cohensDz, 2) / (2 * n))
+  const standardError = Math.sqrt(Math.max(0, variance))
+  const criticalT = getStudentTCriticalValue(degreesOfFreedom, alpha)
+  const margin = criticalT * standardError
+
+  return {
+    cohensDz: Number(cohensDz.toFixed(4)),
+    standardError: Number(standardError.toFixed(4)),
+    criticalT: Number(criticalT.toFixed(4)),
+    ciLower: Number((cohensDz - margin).toFixed(4)),
+    ciUpper: Number((cohensDz + margin).toFixed(4)),
+  }
+}
+
+export interface HolmBonferroniStepItem {
+  rank: number
+  metric: string
+  baselinePolicy: string
+  hypothesisLabel: string
+  rawPValue: number
+  criticalAlpha: number
+  adjustedPValue: number
+  uncorrectedSignificant: boolean
+  holmSignificant: boolean
+  rejectionDecision: 'Reject H0' | 'Fail to Reject'
+}
+
+/**
+ * Computes dynamic Holm-Bonferroni step-down significance matrix with critical alpha thresholds.
+ * Does NOT assume a fixed number of comparisons; derives m dynamically from input array length.
+ */
+export function computeHolmBonferroniMatrix(
+  comparisons: {
+    metric: string
+    baselinePolicy: string
+    pValue: number
+    adjustedPValue?: number
+    isStatisticallySignificant?: boolean
+  }[],
+  familyAlpha: number = 0.05
+): HolmBonferroniStepItem[] {
+  if (!comparisons || comparisons.length === 0) return []
+
+  const sorted = [...comparisons].sort((a, b) => a.pValue - b.pValue)
+  const m = sorted.length
+
+  return sorted.map((comp, idx) => {
+    const rank = idx + 1
+    const criticalAlpha = Number((familyAlpha / (m - rank + 1)).toFixed(6))
+    const uncorrectedSignificant = comp.pValue < familyAlpha
+    const holmSignificant = comp.adjustedPValue !== undefined
+      ? comp.adjustedPValue < familyAlpha
+      : !!comp.isStatisticallySignificant
+
+    return {
+      rank,
+      metric: comp.metric,
+      baselinePolicy: comp.baselinePolicy,
+      hypothesisLabel: `H0,${rank}: μ(${comp.metric}, Adaptive) = μ(${comp.metric}, ${comp.baselinePolicy})`,
+      rawPValue: comp.pValue,
+      criticalAlpha,
+      adjustedPValue: comp.adjustedPValue ?? comp.pValue,
+      uncorrectedSignificant,
+      holmSignificant,
+      rejectionDecision: holmSignificant ? 'Reject H0' : 'Fail to Reject',
+    }
+  })
+}
