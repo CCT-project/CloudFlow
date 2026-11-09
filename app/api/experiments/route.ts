@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
       sortBy: validation.data.sortBy,
       order: validation.data.order,
       userId: user.id, // Authenticated owner filter from signed session
-      includePublic: validation.data.scope !== 'mine', // Includes public research benchmarks by default
+      includePublic: validation.data.scope === 'all', // Defaults to FALSE (mine only) unless explicitly scope=all
     }
 
     const result = await getExperiments(queryOptions)

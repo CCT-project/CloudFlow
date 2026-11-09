@@ -36,7 +36,7 @@ function createMockPrismaClient() {
     $transaction: async <T>(fn: (tx: any) => Promise<T>): Promise<T> => {
       return await fn(mock)
     },
-    $queryRaw: async () => [{ '?column?': 1 }],
+    $queryRaw: async () => [{ column_name: 'userId' }, { column_name: 'isPublic' }],
     experiment: {
       create: async (args: any) => {
         const id = args.data.id || `exp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -282,6 +282,7 @@ test('Storage: Retrieves experiment by ID', async () => {
         coldStartModel: 'Model',
       },
       policyResults: sampleFivePolicyResults,
+      isPublic: true,
     },
     mockClient
   )
@@ -367,20 +368,22 @@ test('Storage: Deletion cascades and removes policy results', async () => {
         coldStartModel: 'Model',
       },
       policyResults: sampleFivePolicyResults,
+      userId: 'test-owner',
+      isPublic: true,
     },
     mockClient
   )
 
   assert.equal(mockClient._policyResults.length, 5)
 
-  const delResult = await deleteExperiment(created.id, mockClient)
+  const delResult = await deleteExperiment(created.id, 'test-owner', mockClient)
   assert.equal(delResult.deleted, true)
   assert.equal(mockClient._experiments.length, 0)
   assert.equal(mockClient._policyResults.length, 0, 'Cascading deletion must remove associated policy results')
 
   // Subsequent get should throw NotFoundError
   await assert.rejects(async () => {
-    await getExperimentById(created.id, mockClient)
+    await getExperimentById(created.id, 'test-owner', mockClient)
   }, NotFoundError)
 })
 

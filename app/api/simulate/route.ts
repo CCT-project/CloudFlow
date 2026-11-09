@@ -121,10 +121,15 @@ export async function POST(request: NextRequest) {
       reqData.compareAllPolicies = true
     }
 
-    // When persistence is requested, enforce multi-layer deduplication
-    if (reqData.saveExperiment) {
+    // Enforce strict multi-tenant isolation: database persistence is permitted only for verified user sessions
+    if (reqData.saveExperiment && !sessionUser) {
+      reqData.saveExperiment = false
+    }
+
+    // When persistence is requested by an authenticated user, enforce multi-layer deduplication
+    if (reqData.saveExperiment && sessionUser) {
       const user = sessionUser
-      const dedupKey = getSimulationDeduplicationKey(user?.id, reqData)
+      const dedupKey = getSimulationDeduplicationKey(user.id, reqData)
 
       // Layer 1: Check in-flight concurrent execution promise
       const existingInFlight = inFlightSimulations.get(dedupKey)
@@ -142,7 +147,7 @@ export async function POST(request: NextRequest) {
 
       // Layer 3: Check database for an identical experiment recently created by this user
       const existingDbRecord = await findRecentDuplicateExperiment({
-        userId: user ? user.id : null,
+        userId: user.id,
         workloadType: reqData.workloadType || 'Medium',
         requestCount: reqData.requestCount,
         durationMinutes: reqData.durationMinutes || 30,
@@ -195,7 +200,7 @@ export async function POST(request: NextRequest) {
           slaLatencyThresholdMs: result.workload.slaLatencyThresholdMs,
           arrivalPattern: result.workload.arrivalPattern,
           seed: reqData.seed ?? 4242,
-          userId: user ? user.id : null,
+          userId: user.id, // Strictly bound to verified server session; never null
           isPublic: false,
           weights: {
             ...DEFAULT_ADAPTIVE_WEIGHTS,
@@ -237,8 +242,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Non-persisted transient simulation (saveExperiment === false)
+    // Non-persisted transient simulation (saveExperiment === false or unauthenticated)
     const result = runSimulation(reqData)
+    result.isSaved = false
     return jsonResponse(result, 200)
   } catch (err: unknown) {
     logStructuredDatabaseError(err, {

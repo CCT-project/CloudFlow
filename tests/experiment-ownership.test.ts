@@ -386,11 +386,11 @@ test('Multi-User Ownership: Public benchmark experiment can be viewed by all use
   assert.equal(deleted.deleted, true)
 })
 
-test('Multi-User Ownership: Preserves existing legacy experiments with userId=null', async () => {
+test('Multi-User Ownership: Strict fail-closed access for legacy experiments with userId=null', async () => {
   const client = createMockPrismaClient()
 
-  // Simulate an experiment record that existed before the user migration (userId = null)
-  const legacyExp = await client.experiment.create({
+  // 1. Legacy unassigned private record (userId = null, isPublic = false) -> MUST be denied
+  const legacyPrivateExp = await client.experiment.create({
     data: {
       name: 'Legacy Baseline Run Before Auth',
       workloadType: 'Low',
@@ -399,7 +399,7 @@ test('Multi-User Ownership: Preserves existing legacy experiments with userId=nu
       slaLatencyThresholdMs: 400,
       arrivalPattern: 'Steady',
       seed: 123,
-      userId: null, // Legacy record without user association
+      userId: null,
       isPublic: false,
       weights: { alpha: 0.35, beta: 0.25, gamma: 0.25, delta: 0.15 },
       assumptions: { prng: 'Mulberry32' },
@@ -407,15 +407,43 @@ test('Multi-User Ownership: Preserves existing legacy experiments with userId=nu
     },
   })
 
-  // User A can view the legacy baseline experiment (preserved as baseline)
-  const viewedByA = await getExperimentById(legacyExp.id, 'user-a-uuid', client)
-  assert.equal(viewedByA.id, legacyExp.id)
-  assert.equal(viewedByA.userId, null, 'Legacy record must keep null userId without silent reassignment')
+  // User A attempting to access private unassigned legacy experiment -> 403 Forbidden
+  await assert.rejects(
+    async () => {
+      await getExperimentById(legacyPrivateExp.id, 'user-a-uuid', client)
+    },
+    (err: any) => {
+      assert.ok(err instanceof ForbiddenError, 'Private unassigned experiment access must be denied')
+      return true
+    }
+  )
+
+  // 2. Legacy public record (userId = null, isPublic = true) -> Allowed under public policy
+  const legacyPublicExp = await client.experiment.create({
+    data: {
+      name: 'Legacy Public System Benchmark',
+      workloadType: 'Low',
+      requestCount: 100,
+      durationMinutes: 10,
+      slaLatencyThresholdMs: 400,
+      arrivalPattern: 'Steady',
+      seed: 124,
+      userId: null,
+      isPublic: true,
+      weights: { alpha: 0.35, beta: 0.25, gamma: 0.25, delta: 0.15 },
+      assumptions: { prng: 'Mulberry32' },
+      policyResults: { create: [] },
+    },
+  })
+
+  const viewedPublic = await getExperimentById(legacyPublicExp.id, 'user-a-uuid', client)
+  assert.equal(viewedPublic.id, legacyPublicExp.id)
+  assert.equal(viewedPublic.isPublic, true)
 
   // Standard user cannot delete legacy baseline experiments
   await assert.rejects(
     async () => {
-      await deleteExperiment(legacyExp.id, 'user-a-uuid', client)
+      await deleteExperiment(legacyPublicExp.id, 'user-a-uuid', client)
     },
     (err: any) => {
       assert.ok(err instanceof ForbiddenError, 'Standard users cannot delete system/legacy baseline experiments')

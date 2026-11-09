@@ -1263,9 +1263,11 @@ function Overview({
 // WORKLOAD SIMULATION TAB
 // ==========================================
 function Simulation({
+  user,
   onSimulationComplete,
   onNavigateComparison,
 }: {
+  user?: UserSession | null
   onSimulationComplete: (exp: ExperimentRecord) => void
   onNavigateComparison: () => void
 }) {
@@ -1335,7 +1337,7 @@ function Simulation({
         slaLatencyThresholdMs,
         arrivalPattern,
         compareAllPolicies: true,
-        saveExperiment,
+        saveExperiment: Boolean(saveExperiment && user),
         adaptiveWeights: currentWeights,
       }
 
@@ -1537,12 +1539,13 @@ function Simulation({
             <input
               type="checkbox"
               id="saveExperiment"
-              checked={saveExperiment}
+              checked={saveExperiment && Boolean(user)}
+              disabled={!user}
               onChange={(e) => setSaveExperiment(e.target.checked)}
               className="rounded text-emerald-600 accent-emerald-600"
             />
             <label htmlFor="saveExperiment" className="text-xs text-slate-600 cursor-pointer">
-              Persist experiment record to database history
+              Persist experiment record to database history {user ? `(as ${user.email})` : '(sign in required to save)'}
             </label>
           </div>
 
@@ -2469,7 +2472,7 @@ function ExperimentHistory({
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`/api/experiments?page=${pageNum}&limit=10&sortBy=createdAt&order=desc`)
+      const res = await fetch(`/api/experiments?scope=mine&page=${pageNum}&limit=10&sortBy=createdAt&order=desc`)
       const json = await res.json()
       if (res.ok && json.status === 'success') {
         setExperiments(json.data.experiments || [])
@@ -2756,18 +2759,24 @@ function Dashboard({
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch('/api/experiments?limit=50&sortBy=createdAt&order=desc')
+      const res = await fetch('/api/experiments?scope=mine&limit=50&sortBy=createdAt&order=desc')
       const json = await res.json()
       if (res.ok && json.status === 'success') {
         const list = json.data.experiments || []
         setExperiments(list)
-        if (list.length > 0 && !selectedExperiment) {
+        if (list.length > 0) {
           setSelectedExperiment(list[0])
+        } else {
+          setSelectedExperiment(null)
         }
       } else {
+        setExperiments([])
+        setSelectedExperiment(null)
         setError(json.error?.message || 'Database unavailable. Using active session simulations.')
       }
     } catch {
+      setExperiments([])
+      setSelectedExperiment(null)
       setError('Unable to reach experiment database. Running in session mode.')
     } finally {
       setLoading(false)
@@ -2775,18 +2784,26 @@ function Dashboard({
   }
 
   useEffect(() => {
-    fetchExperiments()
-  }, [])
+    // Strict multi-user state isolation: purge cached experiments whenever active user changes
+    setExperiments([])
+    setSelectedExperiment(null)
+    setDetailsModalExp(null)
+    if (user) {
+      fetchExperiments()
+    }
+  }, [user?.id])
 
   const handleSimulationComplete = (newExp: ExperimentRecord) => {
-    setExperiments((prev) => {
-      // Guard against duplicate experiment items in UI state
-      if (prev.some((e) => e.id === newExp.id)) {
-        return prev
-      }
-      return [newExp, ...prev]
-    })
-    setSelectedExperiment(newExp)
+    if (user) {
+      setExperiments((prev) => {
+        // Guard against duplicate experiment items in UI state
+        if (prev.some((e) => e.id === newExp.id)) {
+          return prev
+        }
+        return [newExp, ...prev]
+      })
+      setSelectedExperiment(newExp)
+    }
   }
 
   const content = useMemo(() => {
@@ -2805,6 +2822,7 @@ function Dashboard({
       case 'Workload Simulation':
         return (
           <Simulation
+            user={user}
             onSimulationComplete={handleSimulationComplete}
             onNavigateComparison={() => setActive('Algorithm Comparison')}
           />

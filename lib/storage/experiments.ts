@@ -131,11 +131,16 @@ export async function areOwnershipColumnsAvailable(client: any = defaultPrisma):
     if (client && typeof client === 'object' && '$queryRaw' in client && typeof client.$queryRaw === 'function') {
       const res = await client.$queryRaw`
         SELECT column_name FROM information_schema.columns 
-        WHERE table_name = 'experiments' AND column_name = 'userId' LIMIT 1;
+        WHERE table_name = 'experiments' AND (column_name = 'userId' OR column_name = 'userid') LIMIT 1;
       `
       const hasColumn =
         Array.isArray(res) &&
-        res.some((r: any) => r && (r.column_name === 'userId' || r.COLUMN_NAME === 'userId'))
+        res.some((r: any) => r && (
+          r.column_name === 'userId' ||
+          r.column_name === 'userid' ||
+          r.COLUMN_NAME === 'userId' ||
+          r.COLUMN_NAME === 'userid'
+        ))
 
       if (isDefault) {
         defaultPrismaColumnsChecked = true
@@ -583,34 +588,28 @@ export async function getExperiments(
   try {
     const hasColumns = await areOwnershipColumnsAvailable(client)
 
-    let where: Record<string, any> | undefined = undefined
+    let where: Record<string, any>
 
-    if (hasColumns) {
-      if (options.userId) {
-        if (options.includePublic === false) {
-          where = { userId: options.userId }
-        } else {
-          where = {
-            OR: [
-              { userId: options.userId },
-              { isPublic: true },
-              { userId: null }, // Preserved legacy baseline benchmarks
-            ],
-          }
-        }
+    if (options.userId) {
+      if (options.includePublic === false) {
+        // Strict multi-tenant user isolation: return only records owned by this user
+        where = { userId: options.userId }
       } else {
-        // Unauthenticated or public listing: only public or legacy
+        // Return user's private records plus public shared benchmarks (never unassigned)
         where = {
           OR: [
+            { userId: options.userId },
             { isPublic: true },
-            { userId: null },
           ],
         }
       }
+    } else {
+      // Unauthenticated or general public listing: strictly public benchmarks only
+      where = { isPublic: true }
     }
 
     const [total, items] = await Promise.all([
-      client.experiment.count(where ? { where } : undefined),
+      client.experiment.count({ where }),
       client.experiment.findMany({
         where,
         skip,
@@ -668,10 +667,14 @@ export async function getExperimentById(
     // Ownership & Access Control Validation
     const isOwner = Boolean(userId && exp.userId && exp.userId === userId)
     const isPublic = Boolean(exp.isPublic)
-    const isLegacyUnassigned = exp.userId === null || exp.userId === undefined
 
-    // Private experiments can only be accessed by their owner
-    if (!isOwner && !isPublic && !isLegacyUnassigned) {
+    // Strict fail-closed authorization:
+    // 1. If an experiment is public, allow access according to public-access policy.
+    // 2. If an experiment is private and userId matches the authenticated user ID, allow access.
+    // 3. If an experiment is private and userId belongs to another user, deny access.
+    // 4. If an experiment has userId = null and isPublic = false, deny access.
+    // 5. If the request is unauthenticated, never expose private or unassigned experiments.
+    if (!isOwner && !isPublic) {
       throw new ForbiddenError('You do not have permission to view this private experiment.')
     }
 
@@ -707,17 +710,9 @@ export async function deleteExperiment(
       throw new NotFoundError(`Experiment with ID '${id}' was not found.`)
     }
 
-    // If userId was provided, enforce ownership rules
-    if (userId) {
-      // System and legacy unassigned experiments cannot be deleted by users
-      if (exp.userId === null || exp.userId === undefined) {
-        throw new ForbiddenError('System and legacy benchmark experiments cannot be deleted.')
-      }
-
-      // Only the verified owner can delete their private or public experiment
-      if (exp.userId !== userId) {
-        throw new ForbiddenError('You do not have permission to delete this experiment.')
-      }
+    // Strict fail-closed ownership: only the verified owner can delete an experiment
+    if (!userId || !exp.userId || exp.userId !== userId) {
+      throw new ForbiddenError('You do not have permission to delete this experiment.')
     }
 
     await client.experiment.delete({
