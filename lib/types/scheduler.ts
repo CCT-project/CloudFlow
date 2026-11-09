@@ -139,6 +139,20 @@ export interface SimulatedRequestTrace {
   executionDurationMs?: number
   queueingDelayMs?: number
   coldStartDelayMs?: number
+  containerId?: string
+  serviceStartTimeMs?: number
+  serviceFinishTimeMs?: number
+  activeConcurrency?: number
+  lifecycleState?: 'cold_start_scale_out' | 'warm_reuse' | 'queue_delayed'
+}
+
+export interface ContainerLifecycleEvent {
+  timestampMs: number
+  candidateId: string
+  containerId: string
+  eventType: 'created' | 'warm_reuse' | 'queue_wait' | 'busy' | 'idle' | 'expired'
+  durationMs?: number
+  activeConcurrency: number
 }
 
 export interface SimulateResponseBody {
@@ -159,6 +173,8 @@ export interface SimulateResponseBody {
     adaptivePolicyModel?: string
   }
   sampleTraces: SimulatedRequestTrace[]
+  policyTraces?: Partial<Record<PolicyType, SimulatedRequestTrace[]>>
+  lifecycleEvents?: ContainerLifecycleEvent[]
   isSaved?: boolean
   savedExperimentId?: string
 }
@@ -322,6 +338,12 @@ export interface PolicyBatchStatistics {
   policy: PolicyType
   sampleSize: number
   pooledP95LatencyMs?: number
+  pooledQuantiles?: {
+    p50: number
+    p90: number
+    p95: number
+    p99: number
+  }
   metrics: {
     costUSD: MetricSummaryStatistics
     carbonG: MetricSummaryStatistics
@@ -371,4 +393,7 @@ export interface BatchResearchResponseBody {
   }
   policyStatistics: Record<PolicyType, PolicyBatchStatistics>
   comparisons: BatchComparisonItem[]
+  latencyObservations?: Partial<Record<PolicyType, number[]>>
+  representativeTraces?: SimulatedRequestTrace[]
+  representativeLifecycleEvents?: ContainerLifecycleEvent[]
 }

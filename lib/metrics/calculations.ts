@@ -71,6 +71,16 @@ export function calculateP95Latency(latencies: number[]): number {
 }
 
 /**
+ * Calculates empirical percentile (rank-based) across observation samples.
+ */
+export function calculatePercentile(values: number[], percentile: number): number {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  const rank = Math.max(0, Math.ceil((percentile / 100) * sorted.length) - 1)
+  return Number(sorted[rank].toFixed(2))
+}
+
+/**
  * Calculates pooled empirical 95th percentile latency across concatenated request-level traces.
  * Statistically preferred over averaging sample P95s across seeds due to non-linearity of percentiles.
  */

@@ -34,7 +34,7 @@ interface RecentSimulationEntry {
 const recentSavedSimulations = new Map<string, RecentSimulationEntry>()
 const DEDUPLICATION_WINDOW_MS = 5000
 
-export function clearSimulationDeduplicationCache(): void {
+function clearSimulationDeduplicationCache(): void {
   inFlightSimulations.clear()
   recentSavedSimulations.clear()
 }

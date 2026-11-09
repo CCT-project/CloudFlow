@@ -1,5 +1,6 @@
 import type {
   AdaptiveObjectiveWeights,
+  ContainerLifecycleEvent,
   PolicyPerformanceSummary,
   PolicyType,
   ServerlessCandidate,
@@ -32,6 +33,7 @@ export interface PolicySimulationResult {
   summary: PolicyPerformanceSummary
   traces: SimulatedRequestTrace[]
   latencies: number[]
+  lifecycleEvents?: ContainerLifecycleEvent[]
 }
 
 export interface SimulationOptions {
@@ -110,16 +112,32 @@ export function simulatePolicyOnWorkload(
   let maxConcurrency = 0
 
   const traces: SimulatedRequestTrace[] = []
-  const maxSampleTraces = Math.min(requests.length, 50)
+  const lifecycleEvents: ContainerLifecycleEvent[] = []
+  const maxSampleTraces = Math.min(requests.length, 250)
 
   for (const req of requests) {
     // 1. Maintain candidate pools at this arrival timestamp: expire idle containers (> COLD_START_TIMEOUT_MS)
-    for (const pool of Object.values(pools)) {
-      pool.instances = pool.instances.filter((inst) => {
+    for (const [candId, pool] of Object.entries(pools)) {
+      const remaining: ContainerInstance[] = []
+      for (const inst of pool.instances) {
         const isBusy = inst.busyUntilMs > req.arrivalTimeMs
         const idleDuration = req.arrivalTimeMs - inst.lastUsedMs
-        return isBusy || idleDuration <= COLD_START_TIMEOUT_MS
-      })
+        if (isBusy || idleDuration <= COLD_START_TIMEOUT_MS) {
+          remaining.push(inst)
+        } else {
+          // Log container idle expiration event
+          if (lifecycleEvents.length < 500) {
+            lifecycleEvents.push({
+              timestampMs: inst.lastUsedMs + COLD_START_TIMEOUT_MS,
+              candidateId: candId,
+              containerId: inst.id,
+              eventType: 'expired',
+              activeConcurrency: pool.instances.length - 1,
+            })
+          }
+        }
+      }
+      pool.instances = remaining
     }
 
     // 2. Determine candidate warm availability at current arrival time
@@ -160,22 +178,28 @@ export function simulatePolicyOnWorkload(
     let coldStartDelayMs = 0
     let wasCold = false
     let startTimeMs = req.arrivalTimeMs
+    let assignedContainerId = `${chosenCandidate.id}-inst-1`
+    let lifecycleState: 'cold_start_scale_out' | 'warm_reuse' | 'queue_delayed' = 'warm_reuse'
 
     if (idleInstances.length > 0) {
       // Warm reuse
       wasCold = false
+      lifecycleState = 'warm_reuse'
       const inst = idleInstances[0]
+      assignedContainerId = inst.id
       startTimeMs = req.arrivalTimeMs
       inst.busyUntilMs = startTimeMs + req.executionDurationMs
       inst.lastUsedMs = inst.busyUntilMs
     } else if (pool.instances.length < pool.maxInstances) {
       // Concurrency Cold Start: scale out a new container instance
       wasCold = true
+      lifecycleState = 'cold_start_scale_out'
       coldStartsCount++
       coldStartDelayMs = chosenCandidate.coldStartLatencyMs
       startTimeMs = req.arrivalTimeMs + coldStartDelayMs
+      assignedContainerId = `${chosenCandidate.id}-inst-${pool.instances.length + 1}`
       const newInst: ContainerInstance = {
-        id: `${chosenCandidate.id}-inst-${pool.instances.length + 1}`,
+        id: assignedContainerId,
         busyUntilMs: startTimeMs + req.executionDurationMs,
         lastUsedMs: startTimeMs + req.executionDurationMs,
       }
@@ -183,8 +207,10 @@ export function simulatePolicyOnWorkload(
     } else {
       // Capacity Saturation / Queueing Delay: wait for earliest instance to finish
       wasCold = false
+      lifecycleState = 'queue_delayed'
       pool.instances.sort((a, b) => a.busyUntilMs - b.busyUntilMs)
       const earliest = pool.instances[0]
+      assignedContainerId = earliest.id
       queueingDelayMs = Math.max(0, earliest.busyUntilMs - req.arrivalTimeMs)
       startTimeMs = req.arrivalTimeMs + queueingDelayMs
       earliest.busyUntilMs = startTimeMs + req.executionDurationMs
@@ -202,6 +228,37 @@ export function simulatePolicyOnWorkload(
     )
     if (activeConcurrency > maxConcurrency) {
       maxConcurrency = activeConcurrency
+    }
+
+    if (lifecycleEvents.length < 500) {
+      if (wasCold) {
+        lifecycleEvents.push({
+          timestampMs: req.arrivalTimeMs,
+          candidateId: chosenCandidate.id,
+          containerId: assignedContainerId,
+          eventType: 'created',
+          durationMs: coldStartDelayMs,
+          activeConcurrency,
+        })
+      } else if (queueingDelayMs > 0) {
+        lifecycleEvents.push({
+          timestampMs: req.arrivalTimeMs,
+          candidateId: chosenCandidate.id,
+          containerId: assignedContainerId,
+          eventType: 'queue_wait',
+          durationMs: queueingDelayMs,
+          activeConcurrency,
+        })
+      } else {
+        lifecycleEvents.push({
+          timestampMs: req.arrivalTimeMs,
+          candidateId: chosenCandidate.id,
+          containerId: assignedContainerId,
+          eventType: 'warm_reuse',
+          durationMs: req.executionDurationMs,
+          activeConcurrency,
+        })
+      }
     }
 
     // 5. Total request latency: base network + queueing + cold start + execution duration + jitter
@@ -243,6 +300,11 @@ export function simulatePolicyOnWorkload(
         executionDurationMs: req.executionDurationMs,
         queueingDelayMs: Number(queueingDelayMs.toFixed(1)),
         coldStartDelayMs: Number(coldStartDelayMs.toFixed(1)),
+        containerId: assignedContainerId,
+        serviceStartTimeMs: startTimeMs,
+        serviceFinishTimeMs: startTimeMs + req.executionDurationMs,
+        activeConcurrency,
+        lifecycleState,
       })
     }
   }
@@ -272,7 +334,7 @@ export function simulatePolicyOnWorkload(
     maxConcurrency,
   }
 
-  return { summary, traces, latencies }
+  return { summary, traces, latencies, lifecycleEvents }
 }
 
 /**
@@ -308,6 +370,7 @@ export function runSimulation(body: SimulateRequestBody): SimulateResponseBody {
 
   // Run simulation for each target policy
   const policySummaries: Partial<Record<PolicyType, PolicyPerformanceSummary>> = {}
+  const policyTraces: Partial<Record<PolicyType, SimulatedRequestTrace[]>> = {}
   let primaryResult: PolicySimulationResult | null = null
 
   for (const pol of targetPolicies) {
@@ -324,6 +387,7 @@ export function runSimulation(body: SimulateRequestBody): SimulateResponseBody {
       }
     )
     policySummaries[pol] = res.summary
+    policyTraces[pol] = res.traces
 
     if (pol === primaryPolicy || !primaryResult) {
       primaryResult = res
@@ -345,6 +409,9 @@ export function runSimulation(body: SimulateRequestBody): SimulateResponseBody {
     policy: primaryPolicy,
     summary: primaryResult!.summary,
     policySummaries,
+    sampleTraces: primaryResult!.traces,
+    policyTraces,
+    lifecycleEvents: primaryResult!.lifecycleEvents,
     simulationAssumptions: {
       prng: 'Deterministic Mulberry32 algorithm with independent decoupled streams for arrival times and execution durations',
       concurrencyModel: 'Discrete-event container instance pool with concurrency scale-out, warm reuse, finite capacity queueing, and 10-minute idle expiration',
@@ -354,6 +421,5 @@ export function runSimulation(body: SimulateRequestBody): SimulateResponseBody {
       coldStartModel: '10-minute idle container expiration timeout and concurrency cold-starts when concurrent requests exceed warm instances',
       adaptivePolicyModel: 'Two-stage multi-objective optimization: Stage A filters for SLA feasibility including execution duration; Stage B minimizes normalized score = alpha*Cost + beta*Carbon + gamma*Latency + delta*ColdRisk',
     },
-    sampleTraces: primaryResult!.traces,
   }
 }

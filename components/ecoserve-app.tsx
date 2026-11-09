@@ -40,6 +40,8 @@ import { MethodologyView } from '@/components/methodology-view'
 import { ResearchView } from '@/components/research-view'
 import { TraceVisualizer } from '@/components/trace-visualizer'
 import { ResearchBenchmark } from '@/components/research-benchmark'
+import { LatencyDistributionChart } from '@/components/latency-distribution-chart'
+import { ContainerLifecycleChart } from '@/components/container-lifecycle-chart'
 import {
   Area,
   AreaChart,
@@ -90,6 +92,7 @@ const nav = [
   { label: 'Workload Simulation', icon: Zap },
   { label: 'Adaptive Scheduler', icon: BrainCircuit },
   { label: 'Algorithm Comparison', icon: BarChart3 },
+  { label: 'Research Benchmarks', icon: Sparkles },
   { label: 'Analytics', icon: Gauge },
   { label: 'Experiment History', icon: BookOpen },
   { label: 'Settings', icon: Settings2 },
@@ -1683,6 +1686,37 @@ function Simulation({
                   slaLatencyThresholdMs={slaLatencyThresholdMs}
                 />
               </div>
+
+              {/* Empirical Latency Distribution & Cumulative CDF */}
+              <div className="mt-6">
+                <LatencyDistributionChart
+                  latencyObservations={
+                    latestResult?.policyTraces
+                      ? Object.fromEntries(
+                          Object.entries(latestResult.policyTraces).map(([p, traces]) => [
+                            p,
+                            traces.map((t) => t.latencyMs),
+                          ])
+                        )
+                      : latestResult?.sampleTraces
+                      ? { [latestResult.policy]: latestResult.sampleTraces.map((t) => t.latencyMs) }
+                      : {}
+                  }
+                  slaThresholdMs={slaLatencyThresholdMs}
+                  title="Empirical Request Latency Distribution (Simulation Run)"
+                  subtitle="Histogram frequency and empirical cumulative distribution function (CDF)"
+                />
+              </div>
+
+              {/* Container Lifecycle & Concurrency Profile */}
+              <div className="mt-6">
+                <ContainerLifecycleChart
+                  traces={latestResult?.sampleTraces}
+                  lifecycleEvents={latestResult?.lifecycleEvents}
+                  slaThresholdMs={slaLatencyThresholdMs}
+                  title="Container Lifecycle & Concurrency Dynamics"
+                />
+              </div>
             </div>
           ) : (
             <div className="grid min-h-72 place-items-center text-center p-8">
@@ -2238,7 +2272,13 @@ function Comparison({
 // ==========================================
 // DEDICATED ANALYTICS TAB
 // ==========================================
-function Analytics({ experiments }: { experiments: ExperimentRecord[] }) {
+function Analytics({
+  experiments,
+  onNavigateBenchmarks,
+}: {
+  experiments: ExperimentRecord[]
+  onNavigateBenchmarks?: () => void
+}) {
   const aggregate = useMemo(() => {
     return calculateAggregateMetrics(experiments, 'CloudFlow adaptive')
   }, [experiments])
@@ -2381,7 +2421,28 @@ function Analytics({ experiments }: { experiments: ExperimentRecord[] }) {
 
       {/* Multi-Seed Batch Research Benchmark (k >= 30) */}
       <div className="mt-8">
-        <ResearchBenchmark />
+        {onNavigateBenchmarks && (
+          <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-emerald-200/80 bg-emerald-50/60 p-4 shadow-sm">
+            <div className="flex items-center gap-3">
+              <span className="grid size-9 place-items-center rounded-xl bg-emerald-600 text-white shadow-sm">
+                <Sparkles size={16} />
+              </span>
+              <div>
+                <h3 className="font-semibold text-slate-900 text-sm">Dedicated Research Benchmarks Workspace</h3>
+                <p className="text-xs text-slate-500">
+                  Access the dedicated full-screen multi-seed benchmark lab with advanced parameter controls and reproducibility panel.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={onNavigateBenchmarks}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 transition flex-shrink-0"
+            >
+              Open Benchmarks Tab <ArrowRight size={13} />
+            </button>
+          </div>
+        )}
+        <ResearchBenchmark onNavigateAnalytics={onNavigateBenchmarks ? () => {} : undefined} />
       </div>
     </div>
   )
@@ -2758,8 +2819,28 @@ function Dashboard({
             onSelectExp={(exp) => setSelectedExperiment(exp)}
           />
         )
+      case 'Research Benchmarks':
+        return (
+          <div className="space-y-6">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[.18em] text-emerald-600">Empirical Research Workspace</p>
+              <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">
+                Multi-Seed Statistical Benchmarks
+              </h1>
+              <p className="mt-2 text-sm text-slate-500">
+                Rigorous repeated-measures evaluation (k &ge; 30 independent seeds) with decoupled PRNG streams, discrete-event concurrency, and Holm-Bonferroni FWER significance control.
+              </p>
+            </div>
+            <ResearchBenchmark onNavigateAnalytics={() => setActive('Analytics')} />
+          </div>
+        )
       case 'Analytics':
-        return <Analytics experiments={experiments} />
+        return (
+          <Analytics
+            experiments={experiments}
+            onNavigateBenchmarks={() => setActive('Research Benchmarks')}
+          />
+        )
       case 'Experiment History':
         return (
           <ExperimentHistory

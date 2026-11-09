@@ -323,14 +323,17 @@ export function generateBatchResearchCSV(result: BatchResearchResponseBody): str
 
   lines.push('CloudFlow Research Report: Multi-Seed Statistical Benchmark')
   lines.push('Rigorous Inferential and Descriptive Serverless Scheduling Analysis')
-  lines.push('DISCLAIMER: All values represent deterministic model-based simulation results, NOT real cloud measurements.')
+  lines.push('SIMULATION DISCLAIMER: All values represent deterministic model-based simulation results, NOT real cloud measurements.')
   lines.push('')
 
   // Batch Metadata
-  lines.push('=== BENCHMARK METADATA ===')
+  lines.push('=== BENCHMARK METADATA & REPRODUCIBILITY ===')
   lines.push(`Batch ID,${escapeCSVField(result.batchId)}`)
   lines.push(`Timestamp,${escapeCSVField(result.timestamp)}`)
   lines.push(`Total Seeds (k >= 30),${result.metadata.totalSeeds}`)
+  const firstSeed = result.metadata.seeds[0]
+  const lastSeed = result.metadata.seeds[result.metadata.seeds.length - 1]
+  lines.push(`Seed Range,${escapeCSVField(`[${firstSeed} ... ${lastSeed}]`)}`)
   lines.push(`Seeds List,${escapeCSVField(result.metadata.seeds.join('; '))}`)
   lines.push(`Requests Per Seed,${result.metadata.requestCountPerSeed}`)
   lines.push(`Total Invocations Evaluated,${result.metadata.totalEvaluations}`)
@@ -348,6 +351,35 @@ export function generateBatchResearchCSV(result: BatchResearchResponseBody): str
   lines.push(`Trace Parity,${escapeCSVField(result.metadata.methodology.identicalTraceCondition)}`)
   lines.push('')
 
+  // True Empirical Pooled Request Quantiles
+  lines.push('=== POOLED REQUEST-LEVEL LATENCY QUANTILES (TRUE POPULATION PERCENTILES) ===')
+  lines.push([
+    'Policy',
+    'Pooled P50 (ms)',
+    'Pooled P90 (ms)',
+    'Pooled P95 (ms)',
+    'Pooled P99 (ms)',
+    'Sample Mean P95 (ms)',
+    'Quantile Methodology Note',
+  ].map(escapeCSVField).join(','))
+
+  const policies = Object.keys(result.policyStatistics) as PolicyType[]
+  for (const pol of policies) {
+    const stats = result.policyStatistics[pol]
+    const q = stats.pooledQuantiles
+    const sampleMeanP95 = stats.metrics.p95LatencyMs.mean
+    lines.push([
+      pol,
+      q ? q.p50.toFixed(2) : 'N/A',
+      q ? q.p90.toFixed(2) : 'N/A',
+      stats.pooledP95LatencyMs ? stats.pooledP95LatencyMs.toFixed(2) : (q ? q.p95.toFixed(2) : 'N/A'),
+      q ? q.p99.toFixed(2) : 'N/A',
+      sampleMeanP95.toFixed(2),
+      'Pooled quantiles evaluate the full population; preferred over arithmetic mean of seed-level P95s by Jensens Inequality',
+    ].map(escapeCSVField).join(','))
+  }
+  lines.push('')
+
   // Policy Descriptive Statistics Table
   lines.push('=== POLICY DESCRIPTIVE STATISTICS (95% CONFIDENCE INTERVALS) ===')
   lines.push([
@@ -363,7 +395,6 @@ export function generateBatchResearchCSV(result: BatchResearchResponseBody): str
     'Student t Critical (df=n-1)',
   ].map(escapeCSVField).join(','))
 
-  const policies = Object.keys(result.policyStatistics) as PolicyType[]
   const metricKeys = [
     'costUSD',
     'carbonG',
@@ -394,9 +425,11 @@ export function generateBatchResearchCSV(result: BatchResearchResponseBody): str
   }
   lines.push('')
 
-  // Paired Hypothesis Tests & Effect Sizes Table
+  // Paired Hypothesis Tests & Effect Sizes Table (with Holm-Bonferroni Step-Down details)
   lines.push('=== PAIRED STUDENT T-TESTS & HOLM-BONFERRONI CORRECTION ===')
   lines.push([
+    'Rank (k)',
+    'Hypothesis',
     'Metric',
     'Baseline Policy Compared',
     'Adaptive Mean',
@@ -406,14 +439,24 @@ export function generateBatchResearchCSV(result: BatchResearchResponseBody): str
     'Degrees of Freedom',
     't-Statistic',
     'Raw p-Value',
+    'Critical Alpha (alpha / (m - k + 1))',
     'Holm-Bonferroni Adjusted p-Value',
-    'Statistically Significant (alpha=0.05)',
+    'Uncorrected Significant (p < 0.05)',
+    'Holm Significant (p_adj < 0.05)',
     "Cohen's dz Effect Size",
     'Effect Magnitude',
   ].map(escapeCSVField).join(','))
 
-  for (const comp of result.comparisons) {
+  // Sort comparisons by ascending raw p-value to show true Holm-Bonferroni ranks
+  const sortedComparisons = [...result.comparisons].sort((a, b) => a.pValue - b.pValue)
+  const mTotal = sortedComparisons.length
+
+  sortedComparisons.forEach((comp, idx) => {
+    const rank = idx + 1
+    const criticalAlpha = Number((0.05 / (mTotal - rank + 1)).toFixed(6))
     lines.push([
+      rank,
+      `H0,${rank}: mu(${comp.metric}, Adaptive) = mu(${comp.metric}, ${comp.baselinePolicy})`,
       comp.metric,
       comp.baselinePolicy,
       comp.adaptiveMean,
@@ -423,12 +466,21 @@ export function generateBatchResearchCSV(result: BatchResearchResponseBody): str
       comp.degreesOfFreedom,
       comp.tStatistic,
       comp.pValue,
+      criticalAlpha,
       comp.adjustedPValue,
+      comp.pValue < 0.05 ? 'YES' : 'NO',
       comp.isStatisticallySignificant ? 'YES' : 'NO',
       comp.cohensDz,
       comp.effectSizeMagnitude,
     ].map(escapeCSVField).join(','))
-  }
+  })
+  lines.push('')
+
+  // Limitations & Simulation Disclaimer
+  lines.push('=== REPRODUCIBILITY & SIMULATION LIMITATIONS ===')
+  lines.push('PRNG Model,Independent Mulberry32 streams decoupling inter-arrival times from execution durations')
+  lines.push('Concurrency Model,Discrete-event container pool with M=10 finite capacity and 10-minute idle expiration')
+  lines.push('Simulation Disclaimer,"All performance metrics, latencies, cold starts, and carbon emissions in this report are generated by a deterministic discrete-event simulation model, NOT physical cloud provider telemetry or production measurements."')
 
   return lines.join('\r\n')
 }
@@ -446,7 +498,7 @@ export function generateBatchResearchPDFDoc(result: BatchResearchResponseBody): 
   const margin = 40
   let y = margin
 
-  // Header Banner
+  // Page 1: Header Banner
   doc.setFillColor(15, 23, 42) // Slate 900
   doc.rect(margin, y, 515, 46, 'F')
 
@@ -458,31 +510,33 @@ export function generateBatchResearchPDFDoc(result: BatchResearchResponseBody): 
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(8)
   doc.setTextColor(148, 163, 184)
+  const firstSeed = result.metadata.seeds[0]
+  const lastSeed = result.metadata.seeds[result.metadata.seeds.length - 1]
   doc.text(
-    `Batch: ${result.batchId}  |  Seeds: ${result.metadata.totalSeeds}  |  Evaluations: ${result.metadata.totalEvaluations.toLocaleString()}`,
+    `Batch: ${result.batchId}  |  Seeds: ${result.metadata.totalSeeds} [${firstSeed}..${lastSeed}]  |  Evaluations: ${result.metadata.totalEvaluations.toLocaleString()}`,
     margin + 14,
     y + 35
   )
   y += 56
 
-  // Research Disclaimer Banner
+  // Prominent Simulation Disclaimer Banner
   doc.setFillColor(254, 242, 242) // Red 50
   doc.rect(margin, y, 515, 20, 'F')
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(7)
   doc.setTextColor(185, 28, 28) // Red 700
   doc.text(
-    'DISCLAIMER: All values represent deterministic model-based simulation results, NOT real cloud measurements.',
-    margin + 10,
+    'SIMULATION DISCLAIMER: All performance metrics are model-based discrete-event simulation results, NOT physical cloud measurements.',
+    margin + 8,
     y + 13
   )
-  y += 30
+  y += 28
 
-  // Benchmark Metadata Section
+  // Section 1: Benchmark Metadata
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(10)
   doc.setTextColor(15, 23, 42)
-  doc.text('1. Multi-Seed Experimental Setup', margin, y)
+  doc.text('1. Multi-Seed Experimental Setup & Methodology', margin, y)
   y += 14
 
   doc.setFont('helvetica', 'normal')
@@ -491,16 +545,16 @@ export function generateBatchResearchPDFDoc(result: BatchResearchResponseBody): 
 
   const metaLines = [
     `Workload: ${result.metadata.workloadType}  |  Arrival Pattern: ${result.metadata.arrivalPattern}  |  SLA Latency Target: ${result.metadata.slaLatencyThresholdMs}ms`,
-    `Independent Seeds: ${result.metadata.totalSeeds} (PRNG: Mulberry32)  |  Requests/Seed: ${result.metadata.requestCountPerSeed}  |  Execution Time: ${result.metadata.executionTimeMs}ms`,
-    `Statistical Methodology: Exact Student's t critical values & 2-tailed p-values via Incomplete Beta; Holm-Bonferroni FWER step-down.`,
+    `Independent Seeds: ${result.metadata.totalSeeds} (Range: [${firstSeed}..${lastSeed}])  |  Requests/Seed: ${result.metadata.requestCountPerSeed}  |  Execution Time: ${result.metadata.executionTimeMs}ms`,
+    `Statistical Methodology: Student's t critical values & 2-tailed p-values via Incomplete Beta; Holm-Bonferroni FWER step-down at alpha=0.05.`,
   ]
   metaLines.forEach((line) => {
     doc.text(line, margin, y)
     y += 12
   })
-  y += 10
+  y += 8
 
-  // Policy Performance Table (Mean +/- 95% CI)
+  // Section 2: Policy Performance Table (Mean +/- 95% CI)
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(10)
   doc.setTextColor(15, 23, 42)
@@ -565,18 +619,88 @@ export function generateBatchResearchPDFDoc(result: BatchResearchResponseBody): 
     })
     y += 16
   }
+  y += 10
 
-  y += 14
-
-  // Statistical Comparisons Table
+  // Section 3: Pooled Latency Quantiles Table (Empirical Population Percentiles)
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(10)
   doc.setTextColor(15, 23, 42)
-  doc.text("3. Paired Student's t-Tests & Holm-Bonferroni Significance (Adaptive vs Baselines)", margin, y)
+  doc.text('3. Empirical Request Latency Quantiles (True Population Percentiles vs Mean P95)', margin, y)
   y += 12
 
-  const compWidths = [95, 95, 70, 60, 65, 65, 65]
-  const compHeaders = ['Metric', 'Baseline', 'Diff (%)', 't-Stat', 'p (adj)', "Cohen's dz", 'Significant?']
+  const qWidths = [125, 75, 75, 80, 80, 80]
+  const qHeaders = ['Policy', 'Pooled P50', 'Pooled P90', 'Pooled P95 (True)', 'Pooled P99', 'Sample Mean P95']
+
+  doc.setFillColor(241, 245, 249)
+  doc.rect(margin, y, 515, 16, 'F')
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(7)
+  doc.setTextColor(71, 85, 105)
+
+  curX = margin + 6
+  qHeaders.forEach((h, i) => {
+    doc.text(h, curX, y + 11)
+    curX += qWidths[i]
+  })
+  y += 18
+
+  for (const pol of policies) {
+    const stats = result.policyStatistics[pol]
+    const isAdaptive = pol === 'CloudFlow adaptive'
+    const q = stats.pooledQuantiles
+    const sampleMeanP95 = stats.metrics.p95LatencyMs.mean
+    const pooledP95 = stats.pooledP95LatencyMs ?? (q ? q.p95 : sampleMeanP95)
+
+    if (isAdaptive) {
+      doc.setFillColor(236, 253, 245)
+      doc.rect(margin, y - 2, 515, 15, 'F')
+      doc.setFont('helvetica', 'bold')
+      doc.setTextColor(6, 95, 70)
+    } else {
+      doc.setFont('helvetica', 'normal')
+      doc.setTextColor(30, 41, 59)
+    }
+
+    const cells = [
+      pol,
+      q ? `${q.p50.toFixed(1)} ms` : '—',
+      q ? `${q.p90.toFixed(1)} ms` : '—',
+      `${pooledP95.toFixed(1)} ms`,
+      q ? `${q.p99.toFixed(1)} ms` : '—',
+      `${sampleMeanP95.toFixed(1)} ms`,
+    ]
+
+    curX = margin + 6
+    cells.forEach((c, i) => {
+      doc.text(c, curX, y + 9)
+      curX += qWidths[i]
+    })
+    y += 15
+  }
+
+  // Footer for Page 1
+  doc.setFont('helvetica', 'italic')
+  doc.setFontSize(7)
+  doc.setTextColor(148, 163, 184)
+  doc.text('Page 1 of 2  |  Generated by CloudFlow Adaptive Serverless Research Engine.', margin, 815)
+
+  // ==========================================
+  // PAGE 2: Hypothesis Tests & Limitations
+  // ==========================================
+  doc.addPage()
+  y = margin
+
+  // Page 2 Header Banner
+  doc.setFillColor(15, 23, 42)
+  doc.rect(margin, y, 515, 24, 'F')
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(10)
+  doc.setTextColor(255, 255, 255)
+  doc.text('4. Paired Student\'s t-Tests & Holm-Bonferroni Family-Wise Error Rate Control', margin + 10, y + 16)
+  y += 34
+
+  const compWidths = [85, 80, 55, 50, 55, 55, 65, 70]
+  const compHeaders = ['Metric', 'Baseline', 'Diff (%)', 't-Stat', 'Raw p', 'p (adj)', "Cohen's dz", 'Holm Significant?']
 
   doc.setFillColor(241, 245, 249)
   doc.rect(margin, y, 515, 16, 'F')
@@ -591,21 +715,24 @@ export function generateBatchResearchPDFDoc(result: BatchResearchResponseBody): 
   })
   y += 18
 
-  // Sample top 8 key comparisons to fit on page
-  const keyComparisons = result.comparisons.slice(0, 10)
+  const sortedComps = [...result.comparisons].sort((a, b) => a.pValue - b.pValue)
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(7)
   doc.setTextColor(30, 41, 59)
 
-  for (const comp of keyComparisons) {
+  for (const comp of sortedComps.slice(0, 20)) {
+    const rawP = comp.pValue < 0.0001 ? '< 0.0001' : comp.pValue.toFixed(4)
+    const adjP = comp.adjustedPValue < 0.0001 ? '< 0.0001' : comp.adjustedPValue.toFixed(4)
+
     const row = [
       comp.metric,
       comp.baselinePolicy,
       `${comp.percentDifference > 0 ? '+' : ''}${comp.percentDifference.toFixed(1)}%`,
       comp.tStatistic.toFixed(2),
-      comp.adjustedPValue < 0.001 ? '< 0.001' : comp.adjustedPValue.toFixed(4),
+      rawP,
+      adjP,
       `${comp.cohensDz.toFixed(2)} (${comp.effectSizeMagnitude})`,
-      comp.isStatisticallySignificant ? 'YES (p < 0.05)' : 'NO',
+      comp.isStatisticallySignificant ? 'YES (p < 0.05)' : 'NO (Not Sig.)',
     ]
 
     curX = margin + 6
@@ -613,14 +740,41 @@ export function generateBatchResearchPDFDoc(result: BatchResearchResponseBody): 
       doc.text(cell, curX, y + 9)
       curX += compWidths[i]
     })
-    y += 15
+    y += 14
   }
 
-  // Footer
+  y += 12
+
+  // Section 5: Simulation Assumptions & Limitations
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(10)
+  doc.setTextColor(15, 23, 42)
+  doc.text('5. Simulation Assumptions, Methodology & Research Limitations', margin, y)
+  y += 14
+
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(7.5)
+  doc.setTextColor(100, 116, 139)
+
+  const limitationNotes = [
+    '• Trace Parity: All 5 scheduling algorithms execute against byte-for-byte identical synthetic request streams per seed.',
+    '• PRNG Streams: Independent Mulberry32 PRNG streams decouple request arrival intervals from execution durations.',
+    '• Concurrency & Cold Starts: Discrete-event container pool with finite capacity (M=10), 10-minute idle expiration, and FIFO queueing.',
+    '• Non-Linear Quantiles: True pooled request-level P95 quantiles evaluate the full population, resolving Jensen\'s inequality distortion.',
+    '• Family-Wise Error Rate: Holm-Bonferroni step-down sequentially adjusts p-values to prevent false positive inflation across multiple tests.',
+    '• Model Disclaimer: Results reflect algorithmic trade-offs within a discrete-event model and not physical cloud telemetry.',
+  ]
+
+  limitationNotes.forEach((note) => {
+    doc.text(note, margin, y, { maxWidth: 515 })
+    y += 12
+  })
+
+  // Footer for Page 2
   doc.setFont('helvetica', 'italic')
   doc.setFontSize(7)
   doc.setTextColor(148, 163, 184)
-  doc.text('Generated by CloudFlow Adaptive Serverless Research Engine.', margin, 800)
+  doc.text('Page 2 of 2  |  Generated by CloudFlow Adaptive Serverless Research Engine.', margin, 815)
 
   return doc
 }

@@ -244,6 +244,12 @@ pnpm typecheck
 pnpm build
 ```
 
+### Production Build & Bundler Configuration
+
+CloudFlow specifies `next build --webpack` in its build script:
+- **Cross-Platform Compatibility:** On Windows environments where Windows Defender Application Control (WDAC), AppLocker, or local security policies restrict the execution of unsigned native binary `.node` modules (such as `@next/swc-win32-x64-msvc`), Next.js automatically falls back to WebAssembly (WASM) SWC bindings.
+- **Webpack Fallback:** Next.js Turbopack requires native binary bindings and cannot run with WASM-only bindings. Enforcing `--webpack` ensures reliable, zero-failure compilation across all host environments (including restricted Windows workstations, macOS, and Linux) while maintaining complete deployment compatibility with Vercel production infrastructure.
+
 ---
 
 ## 💾 Database & Experiment Persistence (Phase 4)
