@@ -131,7 +131,7 @@ export function isValidIPAddress(ip: string): boolean {
 
 /**
  * Extracts and sanitizes the client identifier from request headers.
- * 
+ *
  * Precedence:
  * 1. Authenticated User ID (`user:<id>`)
  * 2. Trusted Edge IP from `x-real-ip` (Vercel edge socket IP)
@@ -258,7 +258,7 @@ function getUpstashLimiter(type: RateLimitType): Ratelimit | null {
 /**
  * Checks distributed rate limit for a client and endpoint type.
  * When Redis is available, enforces cluster-wide limits across serverless instances.
- * 
+ *
  * Strict Environment Rules:
  * - In production: If Redis is missing or fails, strictly enforces fail-closed policy
  *   (HTTP 503) without silent in-memory fallback.
