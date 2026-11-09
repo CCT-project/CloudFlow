@@ -34,6 +34,15 @@ import type { ApiErrorResponse } from '../types/scheduler.ts'
 
 export type RateLimitType = 'login' | 'register' | 'simulate' | 'batchResearch'
 
+export type RateLimitErrorCategory =
+  | 'NONE'
+  | 'MISSING_ENV'
+  | 'INVALID_URL'
+  | 'AUTH_ERROR'
+  | 'NETWORK_ERROR'
+  | 'TIMEOUT'
+  | 'UNKNOWN'
+
 export interface RateLimitCheckResult {
   success: boolean
   limit: number
@@ -42,6 +51,8 @@ export interface RateLimitCheckResult {
   retryAfterSeconds: number
   serviceUnavailable?: boolean
   errorMessage?: string
+  diagnosticCode?: string
+  errorCategory?: RateLimitErrorCategory
 }
 
 // In-memory sliding-window bucket for local development and deterministic testing
@@ -170,7 +181,7 @@ export function getClientIdentifier(request: RequestWithHeaders, userId?: string
 }
 
 let redisClient: Redis | null = null
-let redisConfigChecked = false
+let redisExplicitlyMocked = false
 let testProductionMode: boolean | null = null
 
 /**
@@ -185,32 +196,369 @@ function isProductionEnvironment(): boolean {
   return process.env.NODE_ENV === 'production'
 }
 
-function getRedisClient(): Redis | null {
-  if (redisConfigChecked) return redisClient
+export interface NormalizedUpstashConfig {
+  url: string
+  token: string
+}
 
-  const url = process.env.UPSTASH_REDIS_REST_URL
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN
+/**
+ * Normalizes and sanitizes Upstash Redis connection parameters.
+ * Defensively handles common configuration pitfalls:
+ * - Surrounding single or double quotes (e.g. from copy-pasting .env values)
+ * - Trailing slashes in URL
+ * - TCP redis:// or rediss:// connection strings (converts to REST https:// and extracts token if needed)
+ * - Missing protocol prefix (prepends https://)
+ * - Trailing TCP port :6379 (strips since Upstash REST runs over HTTPS port 443)
+ */
+export function normalizeUpstashConfig(
+  rawUrl?: string | null,
+  rawToken?: string | null
+): NormalizedUpstashConfig | null {
+  if (!rawUrl || typeof rawUrl !== 'string') return null
+  let url = rawUrl.trim()
+  let token = typeof rawToken === 'string' ? rawToken.trim() : ''
 
-  if (url && token && url.trim().length > 0 && token.trim().length > 0) {
-    try {
-      redisClient = new Redis({
-        url: url.trim(),
-        token: token.trim(),
-      })
-    } catch {
-      redisClient = null
-    }
-  } else {
-    redisClient = null
+  // Strip surrounding quotes
+  if (
+    (url.startsWith('"') && url.endsWith('"')) ||
+    (url.startsWith("'") && url.endsWith("'"))
+  ) {
+    url = url.slice(1, -1).trim()
+  }
+  if (
+    (token.startsWith('"') && token.endsWith('"')) ||
+    (token.startsWith("'") && token.endsWith("'"))
+  ) {
+    token = token.slice(1, -1).trim()
   }
 
-  redisConfigChecked = true
+  if (url.length === 0 || token.length === 0) {
+    return null
+  }
+
+  // Strictly reject TCP Redis connection schemes (redis:// or rediss://).
+  // CloudFlow rate limiting requires an official Upstash HTTPS REST endpoint.
+  // Silently converting TCP URLs is prohibited to prevent unintended network requests.
+  if (url.startsWith('redis://') || url.startsWith('rediss://')) {
+    return null
+  }
+
+  // Handle missing protocol
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = `https://${url}`
+  }
+
+  // Normalize URL and strip port 6379 / trailing slashes / paths
+  try {
+    const parsed = new URL(url)
+    if (!parsed.hostname || parsed.hostname.trim().length === 0) {
+      return null
+    }
+    parsed.pathname = ''
+    parsed.search = ''
+    parsed.hash = ''
+    if (parsed.port === '6379') {
+      parsed.port = ''
+    }
+    url = parsed.toString().replace(/\/$/, '')
+  } catch {
+    url = url.replace(/:6379$/, '').replace(/\/$/, '')
+  }
+
+  if (!url || !token) return null
+  return { url, token }
+}
+
+export interface CategorizedError {
+  category: RateLimitErrorCategory
+  code: string
+  sanitizedMessage: string
+}
+
+/**
+ * Categorizes Redis errors into safe, sanitized categories and diagnostic codes.
+ * Ensures internal credentials, URLs, tokens, or network specifics are NEVER leaked.
+ */
+export function categorizeRedisError(err: unknown): CategorizedError {
+  if (!err) {
+    return {
+      category: 'UNKNOWN',
+      code: 'REDIS_UNKNOWN',
+      sanitizedMessage: 'An unknown Redis error occurred.',
+    }
+  }
+
+  const rawMessage = err instanceof Error ? err.message : String(err)
+  const lower = rawMessage.toLowerCase()
+
+  if (
+    lower.includes('unauthorized') ||
+    lower.includes('401') ||
+    lower.includes('wrongpass') ||
+    lower.includes('permission denied') ||
+    lower.includes('noperm')
+  ) {
+    return {
+      category: 'AUTH_ERROR',
+      code: 'REDIS_AUTH_FAILED',
+      sanitizedMessage: 'Upstash Redis authentication failed (check REST token and permissions).',
+    }
+  }
+
+  if (
+    lower.includes('timeout') ||
+    lower.includes('timed out') ||
+    lower.includes('etimedout') ||
+    lower.includes('aborterror')
+  ) {
+    return {
+      category: 'TIMEOUT',
+      code: 'REDIS_TIMEOUT',
+      sanitizedMessage: 'Connection to distributed rate limiter timed out.',
+    }
+  }
+
+  if (
+    lower.includes('enotfound') ||
+    lower.includes('econnrefused') ||
+    lower.includes('econnreset') ||
+    lower.includes('fetch failed') ||
+    lower.includes('network')
+  ) {
+    return {
+      category: 'NETWORK_ERROR',
+      code: 'REDIS_NETWORK_ERROR',
+      sanitizedMessage: 'Distributed rate limiter endpoint is unreachable.',
+    }
+  }
+
+  if (
+    lower.includes('redis://') ||
+    lower.includes('rediss://') ||
+    lower.includes('invalid_url_scheme')
+  ) {
+    return {
+      category: 'INVALID_URL',
+      code: 'REDIS_INVALID_URL_SCHEME',
+      sanitizedMessage:
+        'TCP Redis URLs (redis://, rediss://) are not supported. Upstash HTTPS REST endpoint is required.',
+    }
+  }
+
+  if (
+    lower.includes('invalid url') ||
+    lower.includes('url starting with https')
+  ) {
+    return {
+      category: 'INVALID_URL',
+      code: 'REDIS_INVALID_URL',
+      sanitizedMessage: 'Upstash Redis URL is formatted incorrectly.',
+    }
+  }
+
+  return {
+    category: 'UNKNOWN',
+    code: 'REDIS_ERROR',
+    sanitizedMessage: 'Distributed rate limiting store encountered an internal error.',
+  }
+}
+
+export interface RateLimitDiagnostics {
+  urlConfigured: boolean
+  tokenConfigured: boolean
+  urlValidFormat: boolean
+  clientInitialized: boolean
+  connectivityTest: 'passed' | 'failed' | 'skipped'
+  rateLimitTest: 'passed' | 'failed' | 'skipped'
+  errorCategory: RateLimitErrorCategory
+  errorCode?: string
+  sanitizedMessage?: string
+}
+
+/**
+ * Runs safe, non-destructive diagnostics on the distributed rate limiting infrastructure.
+ * Identifies configuration, initialization, connectivity, and rate-limit execution state.
+ * NEVER prints, exposes, or returns tokens, keys, or secret values.
+ */
+export async function getRateLimiterDiagnostics(): Promise<RateLimitDiagnostics> {
+  const rawUrl = process.env.UPSTASH_REDIS_REST_URL
+  const rawToken = process.env.UPSTASH_REDIS_REST_TOKEN
+
+  const urlConfigured = Boolean(rawUrl && rawUrl.trim().length > 0)
+  const tokenConfigured = Boolean(rawToken && rawToken.trim().length > 0)
+
+  if (!urlConfigured || !tokenConfigured) {
+    return {
+      urlConfigured,
+      tokenConfigured,
+      urlValidFormat: false,
+      clientInitialized: false,
+      connectivityTest: 'skipped',
+      rateLimitTest: 'skipped',
+      errorCategory: 'MISSING_ENV',
+      errorCode: 'REDIS_MISSING_CREDENTIALS',
+      sanitizedMessage: 'One or more required Upstash Redis environment variables are missing.',
+    }
+  }
+
+  const normalized = normalizeUpstashConfig(rawUrl, rawToken)
+  let urlValidFormat = false
+  try {
+    if (normalized?.url) {
+      const parsed = new URL(normalized.url)
+      urlValidFormat = parsed.protocol === 'https:' || parsed.protocol === 'http:'
+    }
+  } catch {
+    urlValidFormat = false
+  }
+
+  if (!urlValidFormat || !normalized) {
+    const isTcp =
+      Boolean(rawUrl) &&
+      (rawUrl!.trim().startsWith('redis://') || rawUrl!.trim().startsWith('rediss://'))
+    return {
+      urlConfigured,
+      tokenConfigured,
+      urlValidFormat: false,
+      clientInitialized: false,
+      connectivityTest: 'skipped',
+      rateLimitTest: 'skipped',
+      errorCategory: 'INVALID_URL',
+      errorCode: isTcp ? 'REDIS_INVALID_URL_SCHEME' : 'REDIS_INVALID_URL',
+      sanitizedMessage: isTcp
+        ? 'TCP Redis URLs (redis://, rediss://) are not supported. Upstash HTTPS REST endpoint is required.'
+        : 'Upstash Redis URL format is invalid. Expected valid HTTPS URL.',
+    }
+  }
+
+  let redis: Redis
+  try {
+    redis = new Redis({
+      url: normalized.url,
+      token: normalized.token,
+      retry: { retries: 1 },
+    })
+  } catch (err) {
+    const errorInfo = categorizeRedisError(err)
+    return {
+      urlConfigured,
+      tokenConfigured,
+      urlValidFormat,
+      clientInitialized: false,
+      connectivityTest: 'skipped',
+      rateLimitTest: 'skipped',
+      errorCategory: errorInfo.category,
+      errorCode: errorInfo.code,
+      sanitizedMessage: errorInfo.sanitizedMessage,
+    }
+  }
+
+  // Connectivity test (ping)
+  try {
+    await redis.ping()
+  } catch (err) {
+    const errorInfo = categorizeRedisError(err)
+    return {
+      urlConfigured,
+      tokenConfigured,
+      urlValidFormat,
+      clientInitialized: true,
+      connectivityTest: 'failed',
+      rateLimitTest: 'skipped',
+      errorCategory: errorInfo.category,
+      errorCode: errorInfo.code,
+      sanitizedMessage: errorInfo.sanitizedMessage,
+    }
+  }
+
+  // Rate-limit test
+  try {
+    const testLimiter = new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(5, '60 s'),
+      prefix: 'rl:diagnostic:test',
+      analytics: false,
+    })
+    const res = await testLimiter.limit('health-check')
+    return {
+      urlConfigured,
+      tokenConfigured,
+      urlValidFormat,
+      clientInitialized: true,
+      connectivityTest: 'passed',
+      rateLimitTest: res.success ? 'passed' : 'failed',
+      errorCategory: 'NONE',
+      sanitizedMessage: 'Distributed rate limiter is fully operational.',
+    }
+  } catch (err) {
+    const errorInfo = categorizeRedisError(err)
+    return {
+      urlConfigured,
+      tokenConfigured,
+      urlValidFormat,
+      clientInitialized: true,
+      connectivityTest: 'passed',
+      rateLimitTest: 'failed',
+      errorCategory: errorInfo.category,
+      errorCode: errorInfo.code,
+      sanitizedMessage: errorInfo.sanitizedMessage,
+    }
+  }
+}
+
+let cachedConfigKey = ''
+
+function getRedisClient(): Redis | null {
+  if (redisExplicitlyMocked) return redisClient
+
+  const rawUrl = process.env.UPSTASH_REDIS_REST_URL
+  const rawToken = process.env.UPSTASH_REDIS_REST_TOKEN
+
+  const config = normalizeUpstashConfig(rawUrl, rawToken)
+  if (!config) {
+    redisClient = null
+    cachedConfigKey = ''
+    return null
+  }
+
+  const currentKey = `${config.url}:::${config.token}`
+  if (redisClient && cachedConfigKey === currentKey) {
+    return redisClient
+  }
+
+  try {
+    redisClient = new Redis({
+      url: config.url,
+      token: config.token,
+      retry: { retries: 1 },
+    })
+    cachedConfigKey = currentKey
+    // Invalidate limiters when redisClient is re-created to prevent stale client bindings
+    upstashLimiters = {
+      login: null,
+      register: null,
+      simulate: null,
+      batchResearch: null,
+    }
+  } catch (err) {
+    const errorInfo = categorizeRedisError(err)
+    console.error(
+      `[RateLimit] Failed to initialize Upstash Redis client (${errorInfo.code}): ${errorInfo.sanitizedMessage}`
+    )
+    redisClient = null
+    cachedConfigKey = ''
+  }
+
   return redisClient
 }
 
-export function resetRedisClientForTesting(customClient: Redis | null = null): void {
+export function resetRedisClientForTesting(
+  customClient: any = null,
+  forceMock: boolean = true
+): void {
   redisClient = customClient
-  redisConfigChecked = true
+  redisExplicitlyMocked = forceMock
+  cachedConfigKey = ''
   upstashLimiters = {
     login: null,
     register: null,
@@ -291,12 +639,12 @@ export async function checkRateLimit(
         retryAfterSeconds: result.success ? 0 : retryAfterSeconds,
       }
     } catch (err: unknown) {
-      const errorMsg = err instanceof Error ? err.message : 'Unknown Redis error'
+      const errorInfo = categorizeRedisError(err)
 
       if (isProd) {
         // Production: Fail-closed policy. Never fall back to in-memory silently.
         console.error(
-          `[RateLimit ERROR] Distributed Redis store failed in production for '${type}': ${errorMsg}. Enforcing fail-closed policy.`
+          `[RateLimit ERROR] Distributed Redis store failed in production for '${type}' (${errorInfo.code}): ${errorInfo.sanitizedMessage}. Enforcing fail-closed policy.`
         )
         return {
           success: false,
@@ -306,6 +654,8 @@ export async function checkRateLimit(
           retryAfterSeconds: 10,
           serviceUnavailable: true,
           errorMessage: 'Rate limiting service is temporarily unavailable.',
+          diagnosticCode: errorInfo.code,
+          errorCategory: errorInfo.category,
         }
       }
 
@@ -317,11 +667,21 @@ export async function checkRateLimit(
     }
   }
 
-  // Redis unconfigured / credentials absent
+  // Redis unconfigured / credentials absent or invalid
   if (isProd) {
+    const rawUrl = process.env.UPSTASH_REDIS_REST_URL
+    const isTcp =
+      Boolean(rawUrl) &&
+      (rawUrl!.trim().startsWith('redis://') || rawUrl!.trim().startsWith('rediss://'))
+    const code = isTcp ? 'REDIS_INVALID_URL_SCHEME' : 'REDIS_MISSING_CREDENTIALS'
+    const category: RateLimitErrorCategory = isTcp ? 'INVALID_URL' : 'MISSING_ENV'
+    const message = isTcp
+      ? 'Rate limiting service URL scheme is invalid in production (HTTPS REST required).'
+      : 'Rate limiting service is unconfigured in production.'
+
     // Production: Fail-closed policy. Silent in-memory fallback is prohibited.
     console.error(
-      `[RateLimit ERROR] Upstash Redis credentials unconfigured in production environment for '${type}'. Enforcing fail-closed policy.`
+      `[RateLimit ERROR] Upstash Redis configuration error in production environment for '${type}' (${code}). Enforcing fail-closed policy.`
     )
     return {
       success: false,
@@ -330,7 +690,9 @@ export async function checkRateLimit(
       reset: Date.now() + config.windowSeconds * 1000,
       retryAfterSeconds: 10,
       serviceUnavailable: true,
-      errorMessage: 'Rate limiting service is unconfigured in production.',
+      errorMessage: message,
+      diagnosticCode: code,
+      errorCategory: category,
     }
   }
 
@@ -350,6 +712,10 @@ export function createRateLimitHeaders(result: RateLimitCheckResult): Record<str
 
   if (!result.success && result.retryAfterSeconds > 0) {
     headers['Retry-After'] = String(result.retryAfterSeconds)
+  }
+
+  if (result.diagnosticCode) {
+    headers['X-RateLimit-Error-Code'] = result.diagnosticCode
   }
 
   return headers
@@ -372,7 +738,9 @@ export function createRateLimitErrorResponse(
           result.errorMessage ||
           'Rate limiting service is temporarily unavailable. Please retry shortly.',
         details: [
-          'Distributed protection service offline or unconfigured in production.',
+          result.diagnosticCode
+            ? `Distributed protection service offline (${result.diagnosticCode}).`
+            : 'Distributed protection service offline or unconfigured in production.',
           `Retry-After: ${result.retryAfterSeconds || 10} seconds.`,
         ],
       },

@@ -1,13 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  categorizeRedisError,
   checkRateLimit,
   clearMemoryRateLimitBuckets,
   createRateLimitErrorResponse,
   createRateLimitHeaders,
   getClientIdentifier,
+  getRateLimiterDiagnostics,
   hashClientIdentifier,
   isValidIPAddress,
+  normalizeUpstashConfig,
   RATE_LIMIT_CONFIG,
   resetRedisClientForTesting,
   setProductionModeForTesting,
@@ -264,4 +267,302 @@ test('Task 4: Rate-limit headers structure and header generation across all resp
   assert.equal(json429.error.code, 'RATE_LIMITED_EXCEEDED' in json429.error ? json429.error.code : 'RATE_LIMIT_EXCEEDED')
 
   clearMemoryRateLimitBuckets()
+})
+
+test('Phase 4.1: Missing Redis URL handling and diagnostics', async () => {
+  assert.equal(normalizeUpstashConfig('', 'valid-token'), null)
+  assert.equal(normalizeUpstashConfig(null, 'valid-token'), null)
+  assert.equal(normalizeUpstashConfig('   ', 'valid-token'), null)
+
+  const origUrl = process.env.UPSTASH_REDIS_REST_URL
+  const origToken = process.env.UPSTASH_REDIS_REST_TOKEN
+  delete process.env.UPSTASH_REDIS_REST_URL
+  process.env.UPSTASH_REDIS_REST_TOKEN = 'mock-token'
+
+  const diag = await getRateLimiterDiagnostics()
+  assert.equal(diag.urlConfigured, false)
+  assert.equal(diag.tokenConfigured, true)
+  assert.equal(diag.errorCategory, 'MISSING_ENV')
+  assert.equal(diag.errorCode, 'REDIS_MISSING_CREDENTIALS')
+
+  if (origUrl !== undefined) process.env.UPSTASH_REDIS_REST_URL = origUrl
+  else delete process.env.UPSTASH_REDIS_REST_URL
+  if (origToken !== undefined) process.env.UPSTASH_REDIS_REST_TOKEN = origToken
+  else delete process.env.UPSTASH_REDIS_REST_TOKEN
+})
+
+test('Phase 4.2: Missing Redis token handling and diagnostics', async () => {
+  assert.equal(normalizeUpstashConfig('https://my-db.upstash.io', ''), null)
+  assert.equal(normalizeUpstashConfig('https://my-db.upstash.io', null), null)
+  assert.equal(normalizeUpstashConfig('https://my-db.upstash.io', '   '), null)
+
+  const origUrl = process.env.UPSTASH_REDIS_REST_URL
+  const origToken = process.env.UPSTASH_REDIS_REST_TOKEN
+  process.env.UPSTASH_REDIS_REST_URL = 'https://my-db.upstash.io'
+  delete process.env.UPSTASH_REDIS_REST_TOKEN
+
+  const diag = await getRateLimiterDiagnostics()
+  assert.equal(diag.urlConfigured, true)
+  assert.equal(diag.tokenConfigured, false)
+  assert.equal(diag.errorCategory, 'MISSING_ENV')
+  assert.equal(diag.errorCode, 'REDIS_MISSING_CREDENTIALS')
+
+  if (origUrl !== undefined) process.env.UPSTASH_REDIS_REST_URL = origUrl
+  else delete process.env.UPSTASH_REDIS_REST_URL
+  if (origToken !== undefined) process.env.UPSTASH_REDIS_REST_TOKEN = origToken
+  else delete process.env.UPSTASH_REDIS_REST_TOKEN
+})
+
+test('Phase 4.3: Invalid Redis URL normalization and categorization', () => {
+  // Normalization fixes common user input mistakes
+  const normQuotes = normalizeUpstashConfig('"https://my-db.upstash.io"', '"secret-token"')
+  assert.deepEqual(normQuotes, { url: 'https://my-db.upstash.io', token: 'secret-token' })
+
+  const normTrailing = normalizeUpstashConfig('https://my-db.upstash.io/', 'token')
+  assert.deepEqual(normTrailing, { url: 'https://my-db.upstash.io', token: 'token' })
+
+  const normPort = normalizeUpstashConfig('https://my-db.upstash.io:6379', 'token')
+  assert.deepEqual(normPort, { url: 'https://my-db.upstash.io', token: 'token' })
+
+  // Security requirement: TCP schemes (redis://, rediss://) must be strictly rejected
+  const normTcp = normalizeUpstashConfig('rediss://default:extracted_tok@my-db.upstash.io:6379', '')
+  assert.equal(normTcp, null, 'Must strictly reject rediss:// TCP schemes')
+
+  const normRedis = normalizeUpstashConfig('redis://localhost:6379', 'token')
+  assert.equal(normRedis, null, 'Must strictly reject redis:// TCP schemes')
+
+  // Error categorization for invalid URLs and TCP schemes
+  const cat = categorizeRedisError(new Error('Upstash Redis client was passed an invalid URL.'))
+  assert.equal(cat.category, 'INVALID_URL')
+  assert.equal(cat.code, 'REDIS_INVALID_URL')
+
+  const catTcp = categorizeRedisError(new Error('Invalid URL scheme: redis://'))
+  assert.equal(catTcp.category, 'INVALID_URL')
+  assert.equal(catTcp.code, 'REDIS_INVALID_URL_SCHEME')
+})
+
+test('Phase 4.4: Redis authentication failure classification and error response', async () => {
+  const cat = categorizeRedisError(new Error('Unauthorized, command was: [["evalsha"...]]'))
+  assert.equal(cat.category, 'AUTH_ERROR')
+  assert.equal(cat.code, 'REDIS_AUTH_FAILED')
+
+  setProductionModeForTesting(true)
+  const authFailingRedis = {
+    evalsha: async () => {
+      throw new Error('Unauthorized')
+    },
+    eval: async () => {
+      throw new Error('Unauthorized')
+    },
+  }
+  resetRedisClientForTesting(authFailingRedis)
+
+  const req = new Request('http://localhost:3000/api/auth/login', {
+    headers: { 'x-real-ip': '198.51.100.91' },
+  })
+  const res = await checkRateLimit('login', req)
+  assert.equal(res.success, false)
+  assert.equal(res.serviceUnavailable, true)
+  assert.equal(res.diagnosticCode, 'REDIS_AUTH_FAILED')
+  assert.equal(res.errorCategory, 'AUTH_ERROR')
+
+  const httpRes = createRateLimitErrorResponse(res)
+  assert.equal(httpRes.status, 503)
+  assert.equal(httpRes.headers.get('X-RateLimit-Error-Code'), 'REDIS_AUTH_FAILED')
+  const body = await httpRes.json()
+  assert.ok(body.error.details.some((d: string) => d.includes('REDIS_AUTH_FAILED')))
+
+  resetRedisClientForTesting(null)
+  setProductionModeForTesting(null)
+})
+
+test('Phase 4.5: Redis network timeout classification and error response', async () => {
+  const cat = categorizeRedisError(new Error('Connection timed out ETIMEDOUT'))
+  assert.equal(cat.category, 'TIMEOUT')
+  assert.equal(cat.code, 'REDIS_TIMEOUT')
+
+  setProductionModeForTesting(true)
+  const timeoutRedis = {
+    evalsha: async () => {
+      throw new Error('ETIMEDOUT: Connection to Redis host timed out')
+    },
+    eval: async () => {
+      throw new Error('ETIMEDOUT: Connection to Redis host timed out')
+    },
+  }
+  resetRedisClientForTesting(timeoutRedis)
+
+  const req = new Request('http://localhost:3000/api/simulate', {
+    headers: { 'x-real-ip': '198.51.100.92' },
+  })
+  const res = await checkRateLimit('simulate', req)
+  assert.equal(res.success, false)
+  assert.equal(res.serviceUnavailable, true)
+  assert.equal(res.diagnosticCode, 'REDIS_TIMEOUT')
+  assert.equal(res.errorCategory, 'TIMEOUT')
+
+  const httpRes = createRateLimitErrorResponse(res)
+  assert.equal(httpRes.status, 503)
+  assert.equal(httpRes.headers.get('X-RateLimit-Error-Code'), 'REDIS_TIMEOUT')
+
+  resetRedisClientForTesting(null)
+  setProductionModeForTesting(null)
+})
+
+test('Phase 4.6 & 4.7: Successful Redis connectivity and rate-limit execution diagnostics', async () => {
+  const cat = categorizeRedisError(null)
+  assert.equal(cat.category, 'UNKNOWN')
+
+  const workingRedis = {
+    evalsha: async () => {
+      throw new Error('NOSCRIPT')
+    },
+    eval: async () => {
+      return [3, 5, Date.now() + 60000]
+    },
+  }
+  resetRedisClientForTesting(workingRedis)
+
+  const req = new Request('http://localhost:3000/api/auth/register', {
+    headers: { 'x-real-ip': '198.51.100.93' },
+  })
+  const res = await checkRateLimit('register', req)
+  assert.equal(res.success, true)
+  assert.equal(res.limit, 5)
+
+  resetRedisClientForTesting(null)
+})
+
+test('Phase 4.8: Production fail-closed behavior guarantees zero bypass', async () => {
+  setProductionModeForTesting(true)
+  resetRedisClientForTesting(null)
+
+  const req = new Request('http://localhost:3000/api/auth/login', {
+    headers: { 'x-real-ip': '198.51.100.94' },
+  })
+
+  const res = await checkRateLimit('login', req)
+  assert.equal(res.success, false)
+  assert.equal(res.serviceUnavailable, true)
+  assert.equal(res.diagnosticCode, 'REDIS_MISSING_CREDENTIALS')
+
+  const httpRes = createRateLimitErrorResponse(res)
+  assert.equal(httpRes.status, 503)
+
+  setProductionModeForTesting(null)
+})
+
+test('Phase 4.9: Development fallback behavior allows local prototyping', async () => {
+  setProductionModeForTesting(false)
+  resetRedisClientForTesting(null)
+  clearMemoryRateLimitBuckets()
+
+  const req = new Request('http://localhost:3000/api/simulate', {
+    headers: { 'x-real-ip': '198.51.100.95' },
+  })
+
+  const res1 = await checkRateLimit('simulate', req)
+  assert.equal(res1.success, true)
+  assert.equal(res1.serviceUnavailable, undefined)
+
+  clearMemoryRateLimitBuckets()
+})
+
+test('Phase 4.10: Login and registration rate-limit and error responses', async () => {
+  setProductionModeForTesting(false)
+  resetRedisClientForTesting(null)
+  clearMemoryRateLimitBuckets()
+
+  const reqLogin = new Request('http://localhost:3000/api/auth/login', {
+    headers: { 'x-real-ip': '198.51.100.96' },
+  })
+
+  for (let i = 0; i < 5; i++) {
+    const r = await checkRateLimit('login', reqLogin)
+    assert.equal(r.success, true)
+  }
+
+  const blockedLogin = await checkRateLimit('login', reqLogin)
+  assert.equal(blockedLogin.success, false)
+  const errResLogin = createRateLimitErrorResponse(blockedLogin, 'Too many login attempts. Please try again later.')
+  assert.equal(errResLogin.status, 429)
+  const errBodyLogin = await errResLogin.json()
+  assert.equal(errBodyLogin.status, 'error')
+  assert.equal(errBodyLogin.error.code, 'RATE_LIMIT_EXCEEDED')
+  assert.equal(errBodyLogin.error.message, 'Too many login attempts. Please try again later.')
+  assert.ok(errResLogin.headers.get('Retry-After'))
+
+  const reqReg = new Request('http://localhost:3000/api/auth/register', {
+    headers: { 'x-real-ip': '198.51.100.97' },
+  })
+  for (let i = 0; i < 5; i++) {
+    const r = await checkRateLimit('register', reqReg)
+    assert.equal(r.success, true)
+  }
+  const blockedReg = await checkRateLimit('register', reqReg)
+  assert.equal(blockedReg.success, false)
+  const errResReg = createRateLimitErrorResponse(blockedReg, 'Too many registration attempts. Please try again later.')
+  assert.equal(errResReg.status, 429)
+  const errBodyReg = await errResReg.json()
+  assert.equal(errBodyReg.error.message, 'Too many registration attempts. Please try again later.')
+
+  clearMemoryRateLimitBuckets()
+})
+
+test('Phase 4.11: Transient Redis outage recovery without container restart', async () => {
+  setProductionModeForTesting(true)
+
+  let simulateOutage = true
+  const intermittentRedis = {
+    evalsha: async () => {
+      if (simulateOutage) throw new Error('ETIMEDOUT: Connection to Upstash lost')
+      throw new Error('NOSCRIPT')
+    },
+    eval: async () => {
+      if (simulateOutage) throw new Error('ETIMEDOUT: Connection to Upstash lost')
+      return [2, 5, Date.now() + 60000]
+    },
+  }
+  resetRedisClientForTesting(intermittentRedis)
+
+  const req = new Request('http://localhost:3000/api/simulate', {
+    headers: { 'x-real-ip': '198.51.100.98' },
+  })
+
+  // 1. During outage: fails closed with 503
+  const failResult = await checkRateLimit('simulate', req)
+  assert.equal(failResult.success, false)
+  assert.equal(failResult.serviceUnavailable, true)
+  assert.equal(failResult.diagnosticCode, 'REDIS_TIMEOUT')
+
+  // 2. Outage resolves
+  simulateOutage = false
+
+  // 3. Next request immediately succeeds without requiring container restart
+  const recoveredResult = await checkRateLimit('simulate', req)
+  assert.equal(recoveredResult.success, true)
+  assert.equal(recoveredResult.serviceUnavailable, undefined)
+  assert.equal(recoveredResult.remaining, 2)
+
+  resetRedisClientForTesting(null)
+  setProductionModeForTesting(null)
+})
+
+test('Phase 4.12: Diagnostics explicitly flag TCP Redis URL scheme as invalid', async () => {
+  const origUrl = process.env.UPSTASH_REDIS_REST_URL
+  const origToken = process.env.UPSTASH_REDIS_REST_TOKEN
+
+  process.env.UPSTASH_REDIS_REST_URL = 'rediss://default:token@cluster.upstash.io:6379'
+  process.env.UPSTASH_REDIS_REST_TOKEN = 'some-token'
+
+  const diag = await getRateLimiterDiagnostics()
+  assert.equal(diag.urlConfigured, true)
+  assert.equal(diag.urlValidFormat, false)
+  assert.equal(diag.errorCategory, 'INVALID_URL')
+  assert.equal(diag.errorCode, 'REDIS_INVALID_URL_SCHEME')
+
+  if (origUrl !== undefined) process.env.UPSTASH_REDIS_REST_URL = origUrl
+  else delete process.env.UPSTASH_REDIS_REST_URL
+  if (origToken !== undefined) process.env.UPSTASH_REDIS_REST_TOKEN = origToken
+  else delete process.env.UPSTASH_REDIS_REST_TOKEN
 })
