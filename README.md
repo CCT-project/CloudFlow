@@ -5,7 +5,7 @@
 
 [![CI & Automated Testing](https://github.com/CCT-project/CloudFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/CCT-project/CloudFlow/actions/workflows/ci.yml)
 [![Production Live](https://img.shields.io/badge/Production-Live%20on%20Vercel-success)](https://cloud-flow-kappa.vercel.app)
-[![Tests Passing](https://img.shields.io/badge/Tests-194%20Passing-brightgreen)](tests/)
+[![Tests Passing](https://img.shields.io/badge/Tests-195%20Passing-brightgreen)](tests/)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16.4.5-black)](https://nextjs.org/)
 [![React 19](https://img.shields.io/badge/React-19.0.0-blue)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7.3-blue)](https://www.typescriptlang.org/)
@@ -451,7 +451,7 @@ Outputs four comprehensive artifacts per run in `research-results/<run-id>/`: `s
 CloudFlow uses **Node.js's native test runner (`node:test`)** with zero third-party testing bloat:
 
 ```bash
-# Run all 194 unit, integration, security, and sensitivity tests
+# Run all 195 unit, integration, security, and sensitivity tests
 npm test
 
 # Run strict TypeScript typecheck (0 errors required)
@@ -464,7 +464,7 @@ npx prisma validate
 npm run build
 ```
 
-- **Test Pass Rate:** **194 / 194 tests passing (100%)** across 25 test suites (~20 seconds).
+- **Test Pass Rate:** **195 / 195 tests passing (100%)** across 25 test suites (~20 seconds).
 - Complete test suite documentation is available in [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md).
 
 ---

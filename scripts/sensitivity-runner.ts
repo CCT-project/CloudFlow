@@ -31,7 +31,17 @@ import type { ArrivalPattern } from '../lib/types/scheduler.ts'
 
 export function parseSensitivityArgs(rawArgs: string[]): SensitivityConfig {
   const config: SensitivityConfig = {}
-  const args = [...rawArgs]
+
+  // Normalize args supporting both --key value and --key=value
+  const args: string[] = []
+  for (const raw of rawArgs) {
+    if (raw.startsWith('--') && raw.includes('=')) {
+      const idx = raw.indexOf('=')
+      args.push(raw.slice(0, idx), raw.slice(idx + 1))
+    } else {
+      args.push(raw)
+    }
+  }
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]

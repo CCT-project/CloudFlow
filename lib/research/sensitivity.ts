@@ -460,12 +460,34 @@ export async function runSensitivityAnalysis(config: SensitivityConfig): Promise
   const maxInstances = config.maxInstancesPerCandidate ?? 10
   const seedStart = config.seedStart ?? 4200
 
+  // Validate requests & duration
+  if (typeof requestsPerSeed !== 'number' || !Number.isInteger(requestsPerSeed) || requestsPerSeed < 1) {
+    throw new Error(`Invalid request count: ${requestsPerSeed}. Must be an integer >= 1.`)
+  }
+  if (typeof durationMinutes !== 'number' || !Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+    throw new Error(`Invalid duration minutes: ${durationMinutes}. Must be a positive finite number.`)
+  }
+  if (typeof maxInstances !== 'number' || !Number.isInteger(maxInstances) || maxInstances < 1) {
+    throw new Error(`Invalid max instances: ${maxInstances}. Must be an integer >= 1.`)
+  }
+
   // Resolve seeds
   let seeds: number[]
   if (Array.isArray(config.seeds)) {
+    if (config.seeds.length === 0) {
+      throw new Error('Seeds array cannot be empty.')
+    }
+    for (const s of config.seeds) {
+      if (typeof s !== 'number' || !Number.isInteger(s)) {
+        throw new Error(`Invalid seed value: ${s}. Must be an integer.`)
+      }
+    }
     seeds = config.seeds
   } else {
     const k = config.seeds ?? 30
+    if (typeof k !== 'number' || !Number.isInteger(k) || k < 1) {
+      throw new Error(`Invalid seed count: ${k}. Must be an integer >= 1.`)
+    }
     seeds = Array.from({ length: k }, (_, i) => seedStart + i)
   }
 

@@ -186,7 +186,7 @@ describe('CloudFlow Sensitivity Analysis Framework', () => {
   describe('Artifact Generation & CLI Integration', () => {
     const testOutputDir = 'research-results/unit-test-sensitivity'
 
-    it('parses CLI arguments correctly', () => {
+    it('parses CLI arguments correctly in both space-separated and equals formats', () => {
       const parsed = parseSensitivityArgs([
         '--mode', 'sla',
         '--requests', '250',
@@ -208,6 +208,38 @@ describe('CloudFlow Sensitivity Analysis Framework', () => {
       assert.deepEqual(parsed.workloads, ['Poisson'])
       assert.equal(parsed.outputDir, 'test-output')
       assert.equal(parsed.quiet, true)
+
+      // Verify equals-separated flags
+      const parsedEquals = parseSensitivityArgs([
+        '--mode=weights',
+        '--requests=100',
+        '--seeds=5',
+        '--slas=150,250',
+        '--workload=steady',
+      ])
+      assert.equal(parsedEquals.dimension, 'weights')
+      assert.equal(parsedEquals.requests, 100)
+      assert.equal(parsedEquals.seeds, 5)
+      assert.deepEqual(parsedEquals.slas, [150, 250])
+      assert.deepEqual(parsedEquals.workloads, ['Steady'])
+    })
+
+    it('rejects invalid request counts, non-positive seeds, and empty seed arrays', async () => {
+      await assert.rejects(async () => {
+        await runSensitivityAnalysis({ requests: -5, quiet: true })
+      }, /Invalid request count/)
+
+      await assert.rejects(async () => {
+        await runSensitivityAnalysis({ seeds: 0, quiet: true })
+      }, /Invalid seed count/)
+
+      await assert.rejects(async () => {
+        await runSensitivityAnalysis({ seeds: [], quiet: true })
+      }, /Seeds array cannot be empty/)
+
+      await assert.rejects(async () => {
+        await runSensitivityAnalysis({ seeds: [1.5], quiet: true })
+      }, /Must be an integer/)
     })
 
     it('generates compliant CSV, Manifest, and Markdown artifacts on disk', async () => {

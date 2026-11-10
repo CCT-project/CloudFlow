@@ -16,7 +16,7 @@ CloudFlow uses **Node.js's native test runner (`node:test`)** with standard asse
 ## 2. Available Test Commands
 
 ```bash
-# Run all 194 automated tests across all 25 test suites
+# Run all 195 automated tests across all 25 test suites
 npm test
 # Or with pnpm:
 pnpm test
@@ -223,7 +223,7 @@ CloudFlow provides a dedicated test suite verifying the Multi-Dimensional Sensit
 node --test tests/sensitivity-analysis.test.ts
 ```
 
-### 11.1 Covered Capabilities (12 Tests)
+### 11.1 Covered Capabilities (13 Tests)
 1. **Adaptive Weight Validation & Presets:** Asserts all predefined presets (`balanced`, `cost_prioritized`, `carbon_prioritized`, `latency_prioritized`, `cold_start_prioritized`, `default_adaptive`) sum to $1.0 \pm 0.001$.
 2. **Weight Normalization Ratios:** Verifies `normalizeWeights` correctly normalizes arbitrary positive weight ratios.
 3. **Invalid Weight Rejections:** Validates rejection of negative weights, zero-sum weights, non-finite values, and non-normalized configurations.
