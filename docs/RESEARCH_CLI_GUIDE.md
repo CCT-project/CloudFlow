@@ -17,7 +17,7 @@ In academic and enterprise research evaluations, standard interactive web APIs (
 ### 2.1 Avoidance of Jensen's Inequality Fallacy (Pooled Quantiles)
 A common statistical flaw in systems benchmarking is computing P95 latency per seed run and subsequently taking the arithmetic mean of those P95 values:
 $$\mathbb{E}[P_{95}] \ne P_{95}(\bigcup X_i)$$
-Because percentile operators are non-linear and typically convex in queueing systems, Jensen's inequality dictates that averaging percentiles introduces systematic bias. 
+Because percentile operators are non-linear and typically convex in queueing systems, Jensen's inequality dictates that averaging percentiles introduces systematic bias.
 
 The CLI runner solves this by concatenating all raw individual request latencies across all $k$ seeds into a pooled population vector $L_{\text{pooled}} = [l_1, l_2, \dots, l_{N \times k}]$ and computing true empirical population quantiles:
 $$P_q = \text{Quantile}(L_{\text{pooled}}, q), \quad q \in \{50, 90, 95, 99\}$$
