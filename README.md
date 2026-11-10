@@ -5,7 +5,7 @@
 
 [![CI & Automated Testing](https://github.com/CCT-project/CloudFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/CCT-project/CloudFlow/actions/workflows/ci.yml)
 [![Production Live](https://img.shields.io/badge/Production-Live%20on%20Vercel-success)](https://cloud-flow-kappa.vercel.app)
-[![Tests Passing](https://img.shields.io/badge/Tests-182%20Passing-brightgreen)](tests/)
+[![Tests Passing](https://img.shields.io/badge/Tests-195%20Passing-brightgreen)](tests/)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16.4.5-black)](https://nextjs.org/)
 [![React 19](https://img.shields.io/badge/React-19.0.0-blue)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7.3-blue)](https://www.typescriptlang.org/)
@@ -426,6 +426,24 @@ node --max-old-space-size=4096 scripts/research-runner.ts --workload poisson --r
 ```
 All artifacts are saved to `research-results/<run-id>/` (`benchmark-summary.json`, `policy-comparison.csv`, `reproducibility-manifest.json`). For full CLI documentation, see [docs/RESEARCH_CLI_GUIDE.md](docs/RESEARCH_CLI_GUIDE.md).
 
+### Sensitivity Analysis CLI Runner
+CloudFlow features a multi-dimensional sensitivity analysis framework (`scripts/sensitivity-runner.ts`) to evaluate scheduler robustness across adaptive weight presets, SLA latency thresholds, and workload arrival patterns:
+
+```bash
+# Full sensitivity evaluation matrix (Weights, SLA thresholds, and Workloads across 30 seeds)
+npm run sensitivity
+
+# Specific dimension sweep: Adaptive objective weights sensitivity (10 seeds, 500 requests/seed)
+node scripts/sensitivity-runner.ts --mode weights --requests 500 --seeds 10
+
+# SLA threshold sweep across tight and loose bounds (150ms, 250ms, 400ms, 600ms)
+node scripts/sensitivity-runner.ts --mode sla --slas 150,250,400,600 --requests 1000 --seeds 30
+
+# Workload traffic sensitivity across Steady, Poisson, and Bursty
+node scripts/sensitivity-runner.ts --mode workloads --requests 1000 --seeds 30
+```
+Outputs four comprehensive artifacts per run in `research-results/<run-id>/`: `sensitivity-summary.json`, `sensitivity-results.csv`, `sensitivity-manifest.json`, and `sensitivity-report.md`.
+
 ---
 
 ## 17. Running Automated Tests
@@ -433,7 +451,7 @@ All artifacts are saved to `research-results/<run-id>/` (`benchmark-summary.json
 CloudFlow uses **Node.js's native test runner (`node:test`)** with zero third-party testing bloat:
 
 ```bash
-# Run all 182 unit, integration, and security tests
+# Run all 195 unit, integration, security, and sensitivity tests
 npm test
 
 # Run strict TypeScript typecheck (0 errors required)
@@ -446,7 +464,7 @@ npx prisma validate
 npm run build
 ```
 
-- **Test Pass Rate:** **182 / 182 tests passing (100%)** across 24 test suites (~22 seconds).
+- **Test Pass Rate:** **195 / 195 tests passing (100%)** across 25 test suites (~20 seconds).
 - Complete test suite documentation is available in [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md).
 
 ---

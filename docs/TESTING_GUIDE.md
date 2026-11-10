@@ -16,7 +16,7 @@ CloudFlow uses **Node.js's native test runner (`node:test`)** with standard asse
 ## 2. Available Test Commands
 
 ```bash
-# Run all 182 automated tests across all 24 test suites
+# Run all 195 automated tests across all 25 test suites
 npm test
 # Or with pnpm:
 pnpm test
@@ -211,3 +211,26 @@ npm run research -- --workload bursty --requests 10000 --seeds 30
 # High-volume stress run (Poisson, 50,000 requests/seed with 4GB heap allocation)
 node --max-old-space-size=4096 scripts/research-runner.ts --workload poisson --requests 50000 --seeds 30
 ```
+
+---
+
+## 11. Sensitivity Analysis Test Suite (`tests/sensitivity-analysis.test.ts`)
+
+CloudFlow provides a dedicated test suite verifying the Multi-Dimensional Sensitivity Analysis Framework (`lib/research/sensitivity.ts`, `scripts/sensitivity-runner.ts`):
+
+```bash
+# Run sensitivity analysis test suite
+node --test tests/sensitivity-analysis.test.ts
+```
+
+### 11.1 Covered Capabilities (13 Tests)
+1. **Adaptive Weight Validation & Presets:** Asserts all predefined presets (`balanced`, `cost_prioritized`, `carbon_prioritized`, `latency_prioritized`, `cold_start_prioritized`, `default_adaptive`) sum to $1.0 \pm 0.001$.
+2. **Weight Normalization Ratios:** Verifies `normalizeWeights` correctly normalizes arbitrary positive weight ratios.
+3. **Invalid Weight Rejections:** Validates rejection of negative weights, zero-sum weights, non-finite values, and non-normalized configurations.
+4. **SLA Configuration Sweeps:** Validates default SLA thresholds (`[150, 250, 400, 600]`), sorting, deduplication, and rejection of negative or empty lists.
+5. **Deterministic Trace Parity:** Confirms bitwise reproducibility across runs with identical seed sequences.
+6. **Statistical Calculations:** Verifies paired Student's t-tests with degrees of freedom $df = k - 1$ and Holm-Bonferroni adjusted $p$-values.
+7. **Practical vs. Statistical Significance:** Validates domain threshold triggers for cost ($|\Delta| \ge 5\%$), latency ($|\Delta| \ge 10\text{ ms}$), and SLA violation shifts ($|\Delta| \ge 1.0\%$).
+8. **Pooled Request Quantiles:** Verifies strictly non-decreasing empirical quantiles ($P_{50} \le P_{90} \le P_{95} \le P_{99}$) on concatenated observations.
+9. **CLI Argument Parser:** Validates parsing of `--mode`, `--requests`, `--seeds`, `--slas`, `--weights`, `--workload`, and `--output-dir`.
+10. **End-to-End Artifact Persistence:** Validates generation of all four physical artifacts on disk: `sensitivity-summary.json`, `sensitivity-results.csv`, `sensitivity-manifest.json`, and `sensitivity-report.md`.

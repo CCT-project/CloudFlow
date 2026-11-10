@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/**/*.test.ts",
     "research": "node scripts/research-runner.ts",
+    "sensitivity": "node scripts/sensitivity-runner.ts",
     "db:deploy": "prisma migrate deploy",
     "db:verify": "node --env-file=.env scripts/db-verify.ts"
   },
