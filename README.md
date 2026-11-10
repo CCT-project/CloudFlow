@@ -5,7 +5,7 @@
 
 [![CI & Automated Testing](https://github.com/CCT-project/CloudFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/CCT-project/CloudFlow/actions/workflows/ci.yml)
 [![Production Live](https://img.shields.io/badge/Production-Live%20on%20Vercel-success)](https://cloud-flow-kappa.vercel.app)
-[![Tests Passing](https://img.shields.io/badge/Tests-168%20Passing-brightgreen)](tests/)
+[![Tests Passing](https://img.shields.io/badge/Tests-182%20Passing-brightgreen)](tests/)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16.4.5-black)](https://nextjs.org/)
 [![React 19](https://img.shields.io/badge/React-19.0.0-blue)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7.3-blue)](https://www.typescriptlang.org/)
@@ -411,6 +411,21 @@ pnpm build
 pnpm start
 ```
 
+### Headless Research Benchmarking CLI
+CloudFlow includes an automated, high-throughput command-line runner (`scripts/research-runner.ts`) for executing multi-seed experiments without browser timeouts:
+
+```bash
+# Default benchmark (Steady, Poisson, Bursty workloads across 30 seeds, 1,000 requests/seed)
+pnpm research
+
+# Custom evaluation: Bursty traffic, 5,000 requests per seed, 30 seeds
+pnpm research --workload bursty --requests 5000 --seeds 30
+
+# High-volume stress experiment (50,000 requests per seed)
+node --max-old-space-size=4096 scripts/research-runner.ts --workload poisson --requests 50000 --seeds 30
+```
+All artifacts are saved to `research-results/<run-id>/` (`benchmark-summary.json`, `policy-comparison.csv`, `reproducibility-manifest.json`). For full CLI documentation, see [docs/RESEARCH_CLI_GUIDE.md](docs/RESEARCH_CLI_GUIDE.md).
+
 ---
 
 ## 17. Running Automated Tests
@@ -418,7 +433,7 @@ pnpm start
 CloudFlow uses **Node.js's native test runner (`node:test`)** with zero third-party testing bloat:
 
 ```bash
-# Run all 168 unit, integration, and security tests
+# Run all 182 unit, integration, and security tests
 npm test
 
 # Run strict TypeScript typecheck (0 errors required)
@@ -431,7 +446,7 @@ npx prisma validate
 npm run build
 ```
 
-- **Test Pass Rate:** **168 / 168 tests passing (100%)** across 23 test suites (~26 seconds).
+- **Test Pass Rate:** **182 / 182 tests passing (100%)** across 24 test suites (~22 seconds).
 - Complete test suite documentation is available in [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md).
 
 ---
@@ -477,6 +492,8 @@ For complete in-depth technical specifications, refer to the `docs/` directory:
 - [Research Methodology & Statistics](docs/RESEARCH_METHODOLOGY.md)
 - [Testing & Quality Assurance Guide](docs/TESTING_GUIDE.md)
 - [Assumptions, Limitations & Future Work](docs/LIMITATIONS.md)
+- [Headless Research CLI Guide](docs/RESEARCH_CLI_GUIDE.md)
+- [Final Production Verification Report](docs/FINAL_PRODUCTION_VERIFICATION.md)
 
 ---
 

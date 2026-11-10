@@ -16,7 +16,7 @@ CloudFlow uses **Node.js's native test runner (`node:test`)** with standard asse
 ## 2. Available Test Commands
 
 ```bash
-# Run all 168 automated tests across all 23 test suites
+# Run all 182 automated tests across all 24 test suites
 npm test
 # Or with pnpm:
 pnpm test
@@ -25,6 +25,7 @@ pnpm test
 node --test tests/adaptive.test.ts
 node --test tests/multi-user-isolation-e2e.test.ts
 node --test tests/batch-research.test.ts
+node --test tests/research-runner.test.ts
 
 # Run strict TypeScript typecheck (0 errors required)
 npm run typecheck
@@ -178,3 +179,35 @@ npm run build
 - Compiles the Next.js App Router application using Webpack (`next build --webpack`).
 - Enforces static pre-rendering of root pages (`/`) and server-side dynamic compilation of all 9 API routes.
 - Verifies that bundle chunking, CSP headers, and WASM SWC compiler bindings execute cleanly with zero warnings or errors.
+
+---
+
+## 10. Headless Research CLI Testing & Validation
+
+CloudFlow includes a dedicated automated test suite for its headless research experimentation kernel:
+
+```bash
+# Run the research runner test suite
+node --test tests/research-runner.test.ts
+```
+
+### 10.1 Covered Test Suites (14 Tests)
+1. **Configuration Parsing & Sanitization:** Verifies flag parsing (`-w`, `-r`, `-s`, `--seed-start`, `--sla`, `--duration`, `-M`, `-o`, `--include-traces`, `-q`, `--run-id`), positive integer constraints, and invalid workload rejection.
+2. **Deterministic Parity & Fairness:** Asserts all 5 scheduling policies evaluate identical synthetic request sequences for any given seed.
+3. **Bitwise Reproducibility:** Confirms that identical configuration and seed sequences produce identical cost, latency, carbon, and P95 metrics.
+4. **Pooled Request Quantiles:** Verifies monotonic non-decreasing quantiles ($P_{50} \le P_{90} \le P_{95} \le P_{99}$) calculated directly on the concatenated population vector (avoiding Jensen's inequality fallacy).
+5. **Statistical Significance Testing:** Asserts paired Student's t-tests, Holm-Bonferroni FWER adjustments ($\alpha = 0.05$), and Cohen's $d_z$ effect magnitudes.
+6. **Graceful Interruption & Partial Persistence:** Tests that aborted executions preserve completed workload results to disk without file corruption.
+7. **End-to-End Artifact Generation:** Validates JSON schemas, RFC-4180 CSV tables, and reproducibility manifests.
+
+### 10.2 Standalone Research Execution Commands
+```bash
+# Default research benchmark (All 3 workloads, 30 seeds, 1,000 requests/seed)
+npm run research
+
+# Targeted high-throughput evaluation (Bursty workload, 10,000 requests/seed, 30 seeds)
+npm run research -- --workload bursty --requests 10000 --seeds 30
+
+# High-volume stress run (Poisson, 50,000 requests/seed with 4GB heap allocation)
+node --max-old-space-size=4096 scripts/research-runner.ts --workload poisson --requests 50000 --seeds 30
+```
