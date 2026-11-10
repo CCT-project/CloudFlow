@@ -146,7 +146,49 @@ Every headless benchmark execution automatically generates an empirical audit ma
 
 ---
 
-## 7. Scientific Integrity & Experimental Boundaries
+## 7. Multi-Dimensional Sensitivity Analysis Framework
+
+To evaluate scheduler robustness and prevent cherry-picked benchmark conclusions, CloudFlow incorporates a multi-dimensional sensitivity analysis framework (`lib/research/sensitivity.ts`, `scripts/sensitivity-runner.ts`):
+
+### 7.1 Adaptive Objective Weight Sensitivity
+The adaptive policy scoring function is defined as:
+$$S_i = \alpha \cdot \text{Cost}_i^{\text{norm}} + \beta \cdot \text{Carbon}_i^{\text{norm}} + \gamma \cdot \text{Latency}_i^{\text{norm}} + \delta \cdot \text{ColdRisk}_i^{\text{norm}}$$
+Subject to:
+$$\alpha + \beta + \gamma + \delta = 1.0, \quad \alpha, \beta, \gamma, \delta \ge 0$$
+
+The sensitivity framework systematically evaluates five standardized objective presets plus custom combinations:
+1. **Balanced:** $\alpha = 0.25, \beta = 0.25, \gamma = 0.25, \delta = 0.25$ (uniform trade-off).
+2. **Cost-Prioritized:** $\alpha = 0.70, \beta = 0.10, \gamma = 0.10, \delta = 0.10$ (financial priority).
+3. **Carbon-Prioritized:** $\alpha = 0.10, \beta = 0.70, \gamma = 0.10, \delta = 0.10$ (green cloud priority).
+4. **Latency-Prioritized:** $\alpha = 0.10, \beta = 0.10, \gamma = 0.70, \delta = 0.10$ (performance priority).
+5. **Cold-Start-Prioritized:** $\alpha = 0.10, \beta = 0.10, \gamma = 0.10, \delta = 0.70$ (warm reuse priority).
+6. **Default CloudFlow:** $\alpha = 0.35, \beta = 0.25, \gamma = 0.25, \delta = 0.15$ (empirically calibrated default).
+
+### 7.2 SLA Latency Threshold Sensitivity
+Evaluates scheduler behavior across a spectrum of operational constraints:
+- **Tight SLA ($150\text{ ms}$):** Shrinks the Stage A candidate feasibility pool. When all candidates exceed the threshold, the deterministic shortfall fallback mechanism activates:
+  $$\text{Candidate}_{\text{selected}} = \arg\min_c \left(\max(0, T_{\text{est}, c} - T_{\text{SLA}})\right)$$
+- **Medium SLA ($250\text{ ms}, 400\text{ ms}$):** Typical production service thresholds where cold candidates are penalized and warm candidates satisfy constraints.
+- **Relaxed SLA ($600\text{ ms}$):** All candidates satisfy SLA feasibility ($100\%$ feasible), allowing Stage B to aggressively optimize cost and carbon.
+
+### 7.3 Workload Traffic Dynamics
+Evaluates robustness across three distinct queueing regimes over identical seed traces:
+- **Steady:** Constant deterministic inter-arrival intervals maximizing container warm reuse.
+- **Poisson:** Memoryless exponential inter-arrival intervals ($\lambda = \text{rate}$) testing container idle TTL expiration.
+- **Bursty:** Compound Poisson arrivals with high variance and clustering testing concurrency saturation and queueing delay.
+
+### 7.4 Statistical vs. Practical Significance Separation
+For large sample sizes ($N \ge 30,000$), statistical tests often return microscopic $p$-values ($p < 10^{-6}$) for trivial shifts. CloudFlow explicitly distinguishes:
+- **Statistical Significance:** Paired Student's t-test with Holm-Bonferroni correction ($p_{\text{adj}} < 0.05$).
+- **Practical Significance:** Domain thresholds:
+  - Execution Cost: $|\Delta| \ge 5\%$ and Cohen's $d_z \ge 0.2$.
+  - Carbon Footprint: $|\Delta| \ge 5\%$ and Cohen's $d_z \ge 0.2$.
+  - Response Latency: $|\Delta| \ge 10\text{ ms}$ and Cohen's $d_z \ge 0.2$.
+  - SLA Violations: $|\Delta| \ge 1.0$ percentage point.
+
+---
+
+## 8. Scientific Integrity & Experimental Boundaries
 
 > [!CAUTION]
 > **Simulation Boundary Declaration:**
