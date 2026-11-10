@@ -28,6 +28,7 @@ import {
   RotateCcw,
   Settings2,
   ShieldCheck,
+  Sliders,
   SlidersHorizontal,
   Sparkles,
   Trash2,
@@ -42,6 +43,8 @@ import { TraceVisualizer } from '@/components/trace-visualizer'
 import { ResearchBenchmark } from '@/components/research-benchmark'
 import { LatencyDistributionChart } from '@/components/latency-distribution-chart'
 import { ContainerLifecycleChart } from '@/components/container-lifecycle-chart'
+import { SimulationResults } from '@/components/simulation-results'
+import { SettingsView, PreferencesView } from '@/components/settings-views'
 import {
   Area,
   AreaChart,
@@ -95,7 +98,8 @@ const nav = [
   { label: 'Research Benchmarks', icon: Sparkles },
   { label: 'Analytics', icon: Gauge },
   { label: 'Experiment History', icon: BookOpen },
-  { label: 'Settings', icon: Settings2 },
+  { label: 'Settings', icon: Sliders },
+  { label: 'Preferences', icon: SlidersHorizontal },
 ]
 
 function Logo({ dark = false }: { dark?: boolean }) {
@@ -1288,7 +1292,24 @@ function Simulation({
   const [error, setError] = useState<string | null>(null)
   const [latestResult, setLatestResult] = useState<SimulateResponseBody | null>(null)
   const [latestExperiment, setLatestExperiment] = useState<ExperimentRecord | null>(null)
+  const [showConfig, setShowConfig] = useState(false)
   const isSubmittingRef = useRef(false)
+
+  // Initialize with research presets from localStorage if available
+  useEffect(() => {
+    try {
+      const savedPreset = localStorage.getItem('cloudflow_research_preset')
+      if (savedPreset) {
+        const p = JSON.parse(savedPreset)
+        if (p.alphaCost !== undefined) setAlphaCost(p.alphaCost)
+        if (p.betaCarbon !== undefined) setBetaCarbon(p.betaCarbon)
+        if (p.gammaLatency !== undefined) setGammaLatency(p.gammaLatency)
+        if (p.deltaColdStart !== undefined) setDeltaColdStart(p.deltaColdStart)
+      }
+    } catch {
+      // ignore
+    }
+  }, [])
 
   const handleNormalizeWeights = () => {
     const sum = alphaCost + betaCarbon + gammaLatency + deltaColdStart
@@ -1311,6 +1332,7 @@ function Simulation({
     setDeltaColdStart(0.15)
     setLatestResult(null)
     setLatestExperiment(null)
+    setShowConfig(false)
     setError(null)
   }
 
@@ -1361,6 +1383,7 @@ function Simulation({
       if (res.ok && json.status === 'success') {
         const simRes = json as SimulateResponseBody
         setLatestResult(simRes)
+        setShowConfig(false)
         const exp = simulationResultToExperiment(simRes, currentWeights)
         setLatestExperiment(exp)
         onSimulationComplete(exp)
@@ -1374,6 +1397,176 @@ function Simulation({
       setLoading(false)
     }
   }
+
+  const renderConfigForm = () => (
+    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="font-semibold text-slate-900">Workload Configuration</h2>
+          <p className="text-xs text-slate-500 mt-0.5">Parameters driving the synthetic discrete-event workload generator</p>
+        </div>
+        <Badge tone="green">Deterministic PRNG</Badge>
+      </div>
+
+      <label className="mt-6 block text-xs font-medium text-slate-600">Workload Profile</label>
+      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
+        {(['Low', 'Medium', 'High', 'Bursty', 'Cold-Start-Heavy'] as WorkloadType[]).map((x) => (
+          <button
+            key={x}
+            type="button"
+            onClick={() => setWorkloadType(x)}
+            className={`rounded-xl border px-3 py-2.5 text-center text-xs font-medium transition ${
+              workloadType === x
+                ? 'border-emerald-500 bg-emerald-50 text-emerald-700 shadow-sm'
+                : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            {x}
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <label className="text-xs font-medium text-slate-600">
+          Number of requests
+          <input
+            type="number"
+            min={100}
+            max={500000}
+            value={requestCount}
+            onChange={(e) => setRequestCount(Number(e.target.value))}
+            className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 font-mono"
+          />
+        </label>
+        <label className="text-xs font-medium text-slate-600">
+          Duration (minutes)
+          <input
+            type="number"
+            min={1}
+            max={1440}
+            value={durationMinutes}
+            onChange={(e) => setDurationMinutes(Number(e.target.value))}
+            className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 font-mono"
+          />
+        </label>
+        <label className="text-xs font-medium text-slate-600">
+          SLA latency threshold (ms)
+          <input
+            type="number"
+            min={50}
+            max={5000}
+            value={slaLatencyThresholdMs}
+            onChange={(e) => setSlaLatencyThresholdMs(Number(e.target.value))}
+            className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 font-mono"
+          />
+        </label>
+        <label className="text-xs font-medium text-slate-600">
+          Arrival pattern
+          <select
+            value={arrivalPattern}
+            onChange={(e) => setArrivalPattern(e.target.value as ArrivalPattern)}
+            className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500"
+          >
+            <option value="Poisson">Poisson Process</option>
+            <option value="Steady">Steady / Uniform</option>
+            <option value="Bursty">Bursty Traffic</option>
+          </select>
+        </label>
+      </div>
+
+      {/* Adaptive Objective Weights */}
+      <div className="mt-6 rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-slate-700">CloudFlow Multi-Objective Weights</span>
+          <button
+            type="button"
+            onClick={handleNormalizeWeights}
+            className="text-[10px] text-emerald-700 font-medium hover:underline"
+          >
+            Normalize sum to 1.0
+          </button>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+          <div>
+            <span className="text-slate-500">Cost (α): {alphaCost}</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={alphaCost}
+              onChange={(e) => setAlphaCost(parseFloat(e.target.value))}
+              className="w-full accent-emerald-600 mt-1"
+            />
+          </div>
+          <div>
+            <span className="text-slate-500">Carbon (β): {betaCarbon}</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={betaCarbon}
+              onChange={(e) => setBetaCarbon(parseFloat(e.target.value))}
+              className="w-full accent-emerald-600 mt-1"
+            />
+          </div>
+          <div>
+            <span className="text-slate-500">Latency (γ): {gammaLatency}</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={gammaLatency}
+              onChange={(e) => setGammaLatency(parseFloat(e.target.value))}
+              className="w-full accent-emerald-600 mt-1"
+            />
+          </div>
+          <div>
+            <span className="text-slate-500">Cold-start (δ): {deltaColdStart}</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={deltaColdStart}
+              onChange={(e) => setDeltaColdStart(parseFloat(e.target.value))}
+              className="w-full accent-emerald-600 mt-1"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-center gap-2">
+        <input
+          type="checkbox"
+          id="saveExperiment"
+          checked={saveExperiment && Boolean(user)}
+          disabled={!user}
+          onChange={(e) => setSaveExperiment(e.target.checked)}
+          className="rounded text-emerald-600 accent-emerald-600"
+        />
+        <label htmlFor="saveExperiment" className="text-xs text-slate-600 cursor-pointer">
+          Persist experiment record to database history {user ? `(as ${user.email})` : '(sign in required to save)'}
+        </label>
+      </div>
+
+      <div className="mt-6 flex flex-wrap gap-2">
+        <Button
+          onClick={handleRunSimulation}
+          disabled={loading}
+          className="rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm"
+        >
+          <Play data-icon="inline-start" className={loading ? 'animate-spin' : ''} />
+          {loading ? 'Simulating Workload...' : 'Run Simulation'}
+        </Button>
+        <Button onClick={handleReset} variant="outline" className="rounded-xl">
+          <RotateCcw data-icon="inline-start" /> Reset
+        </Button>
+      </div>
+    </div>
+  )
 
   return (
     <div>
@@ -1397,345 +1590,81 @@ function Simulation({
         </div>
       )}
 
-      <div className="mt-8 grid gap-4 xl:grid-cols-[.9fr_1.1fr]">
-        {/* Form Controls */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-slate-900">Configuration</h2>
-            <Badge tone="green">Deterministic PRNG</Badge>
-          </div>
-
-          <label className="mt-6 block text-xs font-medium text-slate-600">Workload Profile</label>
-          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {(['Low', 'Medium', 'High', 'Bursty', 'Cold-Start-Heavy'] as WorkloadType[]).map((x) => (
-              <button
-                key={x}
-                type="button"
-                onClick={() => setWorkloadType(x)}
-                className={`rounded-xl border px-3 py-2.5 text-left text-xs font-medium transition ${
-                  workloadType === x
-                    ? 'border-emerald-500 bg-emerald-50 text-emerald-700 shadow-sm'
-                    : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                {x}
-              </button>
-            ))}
-          </div>
-
-          <div className="mt-6 grid gap-4 sm:grid-cols-2">
-            <label className="text-xs font-medium text-slate-600">
-              Number of requests
-              <input
-                type="number"
-                min={100}
-                max={500000}
-                value={requestCount}
-                onChange={(e) => setRequestCount(Number(e.target.value))}
-                className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 font-mono"
-              />
-            </label>
-            <label className="text-xs font-medium text-slate-600">
-              Duration (minutes)
-              <input
-                type="number"
-                min={1}
-                max={1440}
-                value={durationMinutes}
-                onChange={(e) => setDurationMinutes(Number(e.target.value))}
-                className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 font-mono"
-              />
-            </label>
-            <label className="text-xs font-medium text-slate-600">
-              SLA latency threshold (ms)
-              <input
-                type="number"
-                min={50}
-                max={5000}
-                value={slaLatencyThresholdMs}
-                onChange={(e) => setSlaLatencyThresholdMs(Number(e.target.value))}
-                className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 font-mono"
-              />
-            </label>
-            <label className="text-xs font-medium text-slate-600">
-              Arrival pattern
-              <select
-                value={arrivalPattern}
-                onChange={(e) => setArrivalPattern(e.target.value as ArrivalPattern)}
-                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500"
-              >
-                <option value="Poisson">Poisson Process</option>
-                <option value="Steady">Steady / Uniform</option>
-                <option value="Bursty">Bursty Traffic</option>
-              </select>
-            </label>
-          </div>
-
-          {/* Adaptive Objective Weights */}
-          <div className="mt-6 rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-700">CloudFlow Objective Weights</span>
-              <button
-                type="button"
-                onClick={handleNormalizeWeights}
-                className="text-[10px] text-emerald-700 hover:underline"
-              >
-                Normalize sum to 1.0
-              </button>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
-              <div>
-                <span className="text-slate-500">Cost (α): {alphaCost}</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={alphaCost}
-                  onChange={(e) => setAlphaCost(parseFloat(e.target.value))}
-                  className="w-full accent-emerald-600 mt-1"
-                />
+      {/* When simulation results exist, render expansive full-width results with top summary bar */}
+      {latestResult ? (
+        <div className="mt-8 space-y-6">
+          {/* Quick Info & Reconfiguration Bar */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="grid size-10 place-items-center rounded-xl bg-emerald-100 text-emerald-700">
+                <Check size={20} />
               </div>
               <div>
-                <span className="text-slate-500">Carbon (β): {betaCarbon}</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={betaCarbon}
-                  onChange={(e) => setBetaCarbon(parseFloat(e.target.value))}
-                  className="w-full accent-emerald-600 mt-1"
-                />
-              </div>
-              <div>
-                <span className="text-slate-500">Latency (γ): {gammaLatency}</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={gammaLatency}
-                  onChange={(e) => setGammaLatency(parseFloat(e.target.value))}
-                  className="w-full accent-emerald-600 mt-1"
-                />
-              </div>
-              <div>
-                <span className="text-slate-500">Cold-start (δ): {deltaColdStart}</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={deltaColdStart}
-                  onChange={(e) => setDeltaColdStart(parseFloat(e.target.value))}
-                  className="w-full accent-emerald-600 mt-1"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-4 flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="saveExperiment"
-              checked={saveExperiment && Boolean(user)}
-              disabled={!user}
-              onChange={(e) => setSaveExperiment(e.target.checked)}
-              className="rounded text-emerald-600 accent-emerald-600"
-            />
-            <label htmlFor="saveExperiment" className="text-xs text-slate-600 cursor-pointer">
-              Persist experiment record to database history {user ? `(as ${user.email})` : '(sign in required to save)'}
-            </label>
-          </div>
-
-          <div className="mt-6 flex gap-2">
-            <Button
-              onClick={handleRunSimulation}
-              disabled={loading}
-              className="rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm"
-            >
-              <Play data-icon="inline-start" className={loading ? 'animate-spin' : ''} />
-              {loading ? 'Simulating Workload...' : 'Run Simulation'}
-            </Button>
-            <Button onClick={handleReset} variant="outline" className="rounded-xl">
-              <RotateCcw data-icon="inline-start" /> Reset
-            </Button>
-          </div>
-        </div>
-
-        {/* Results Panel */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="font-semibold text-slate-900">
-                {latestResult ? 'Simulation Results' : 'Results Preview'}
-              </h2>
-              <p className="mt-1 text-xs text-slate-400">
-                {latestResult
-                  ? `Simulated ${latestResult.workload.requestCount.toLocaleString()} requests across 5 policies.`
-                  : 'Run a simulation to populate multi-policy metrics.'}
-              </p>
-            </div>
-            {latestExperiment && (
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => downloadExperimentCSV(latestExperiment)}
-                  className="rounded-xl text-xs"
-                >
-                  <FileSpreadsheet size={13} data-icon="inline-start" /> CSV
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => downloadExperimentPDF(latestExperiment)}
-                  className="rounded-xl text-xs"
-                >
-                  <FileText size={13} data-icon="inline-start" /> PDF
-                </Button>
-              </div>
-            )}
-          </div>
-
-          {latestResult ? (
-            <div className="mt-6 space-y-6">
-              {/* CloudFlow Adaptive Summary Card */}
-              <div className="rounded-2xl border border-emerald-100 bg-emerald-50/50 p-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-emerald-950 flex items-center gap-1.5">
-                    <BrainCircuit size={15} className="text-emerald-700" /> CloudFlow Adaptive Performance
-                  </span>
-                  <Badge tone="green">Balanced Optimization</Badge>
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-slate-900 text-sm">{workloadType} Workload Simulation</span>
+                  <Badge tone="green">Benchmarked 5 Policies</Badge>
                 </div>
-                <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                  <div>
-                    <span className="text-slate-500">Avg Latency</span>
-                    <p className="mt-1 text-lg font-bold text-slate-900 font-mono">
-                      {latestResult.summary.averageLatencyMs} ms
-                    </p>
-                  </div>
-                  <div>
-                    <span className="text-slate-500">P95 Latency</span>
-                    <p className="mt-1 text-lg font-bold text-slate-900 font-mono">
-                      {latestResult.summary.p95LatencyMs} ms
-                    </p>
-                  </div>
-                  <div>
-                    <span className="text-slate-500">Cost</span>
-                    <p className="mt-1 text-lg font-bold text-slate-900 font-mono">
-                      ${latestResult.summary.totalCostUSD.toFixed(4)}
-                    </p>
-                  </div>
-                  <div>
-                    <span className="text-slate-500">SLA Violations</span>
-                    <p className="mt-1 text-lg font-bold text-slate-900 font-mono">
-                      {latestResult.summary.slaViolationRatePercent}%
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* 5-Policy Comparison Mini-Grid */}
-              <div>
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Fair Policy Comparison
-                </h4>
-                <div className="mt-3 overflow-x-auto rounded-xl border border-slate-100">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-400">
-                      <tr>
-                        <th className="px-3 py-2 font-medium">Policy</th>
-                        <th className="px-3 py-2 font-medium">Avg Latency</th>
-                        <th className="px-3 py-2 font-medium">Cost</th>
-                        <th className="px-3 py-2 font-medium">Carbon</th>
-                        <th className="px-3 py-2 font-medium">SLA Viol.</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 font-mono">
-                      {latestExperiment?.policyResults.map((pr) => (
-                        <tr
-                          key={pr.policy}
-                          className={pr.policy === 'CloudFlow adaptive' ? 'bg-emerald-50/40 font-semibold' : ''}
-                        >
-                          <td className="px-3 py-2 text-slate-800 font-sans">{pr.policy}</td>
-                          <td className="px-3 py-2 text-slate-600">{pr.averageLatencyMs} ms</td>
-                          <td className="px-3 py-2 text-slate-600">${pr.totalCostUSD.toFixed(4)}</td>
-                          <td className="px-3 py-2 text-slate-600">{pr.totalCarbonG.toFixed(1)} g</td>
-                          <td className="px-3 py-2 text-slate-600">{pr.slaViolationRatePercent}%</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="flex justify-end">
-                <Button
-                  onClick={onNavigateComparison}
-                  variant="outline"
-                  size="sm"
-                  className="rounded-xl text-emerald-700"
-                >
-                  View in Policy Comparison <ArrowRight size={13} data-icon="inline-end" />
-                </Button>
-              </div>
-
-              {/* Interactive Request Trace Visualizer */}
-              <div className="mt-6">
-                <TraceVisualizer
-                  traces={latestResult?.sampleTraces}
-                  slaLatencyThresholdMs={slaLatencyThresholdMs}
-                />
-              </div>
-
-              {/* Empirical Latency Distribution & Cumulative CDF */}
-              <div className="mt-6">
-                <LatencyDistributionChart
-                  latencyObservations={
-                    latestResult?.policyTraces
-                      ? Object.fromEntries(
-                          Object.entries(latestResult.policyTraces).map(([p, traces]) => [
-                            p,
-                            traces.map((t) => t.latencyMs),
-                          ])
-                        )
-                      : latestResult?.sampleTraces
-                      ? { [latestResult.policy]: latestResult.sampleTraces.map((t) => t.latencyMs) }
-                      : {}
-                  }
-                  slaThresholdMs={slaLatencyThresholdMs}
-                  title="Empirical Request Latency Distribution (Simulation Run)"
-                  subtitle="Histogram frequency and empirical cumulative distribution function (CDF)"
-                />
-              </div>
-
-              {/* Container Lifecycle & Concurrency Profile */}
-              <div className="mt-6">
-                <ContainerLifecycleChart
-                  traces={latestResult?.sampleTraces}
-                  lifecycleEvents={latestResult?.lifecycleEvents}
-                  slaThresholdMs={slaLatencyThresholdMs}
-                  title="Container Lifecycle & Concurrency Dynamics"
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="grid min-h-72 place-items-center text-center p-8">
-              <div>
-                <div className="mx-auto grid size-12 place-items-center rounded-2xl bg-emerald-50 text-emerald-600">
-                  <Activity size={22} />
-                </div>
-                <p className="mt-4 text-sm font-medium text-slate-800">No simulation results yet</p>
-                <p className="mt-1 max-w-xs text-xs leading-5 text-slate-400">
-                  Configure the workload parameters and click &quot;Run Simulation&quot; to benchmark all five scheduling policies.
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {requestCount.toLocaleString()} requests &bull; {durationMinutes} min &bull; {arrivalPattern} arrival &bull; SLA {slaLatencyThresholdMs}ms
                 </p>
               </div>
             </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowConfig(!showConfig)}
+                className="rounded-xl text-xs"
+              >
+                <SlidersHorizontal size={13} data-icon="inline-start" /> {showConfig ? 'Hide Parameters' : 'Adjust Parameters'}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleReset}
+                className="rounded-xl text-xs text-slate-600 hover:text-rose-600"
+              >
+                <RotateCcw size={13} data-icon="inline-start" /> New Simulation
+              </Button>
+            </div>
+          </div>
+
+          {/* Collapsible Configuration Form */}
+          {showConfig && (
+            <div className="animate-in fade-in duration-200">
+              {renderConfigForm()}
+            </div>
           )}
+
+          {/* Full-width Redesigned Simulation Results View */}
+          <SimulationResults
+            result={latestResult}
+            experiment={latestExperiment}
+            slaLatencyThresholdMs={slaLatencyThresholdMs}
+            onNavigateComparison={onNavigateComparison}
+          />
         </div>
-      </div>
+      ) : (
+        /* Empty State: Side-by-side Form & Preview Placeholder */
+        <div className="mt-8 grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+          <div>{renderConfigForm()}</div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm flex flex-col justify-center items-center text-center min-h-[420px]">
+            <div className="grid size-14 place-items-center rounded-2xl bg-emerald-50 text-emerald-600 mb-4">
+              <Activity size={26} />
+            </div>
+            <h3 className="font-semibold text-slate-800 text-base">Results Preview</h3>
+            <p className="mt-1 max-w-sm text-xs leading-5 text-slate-400">
+              Select your workload profile and target SLA threshold on the left, then click &quot;Run Simulation&quot; to benchmark all five scheduling policies side-by-side.
+            </p>
+            <div className="mt-6 flex flex-wrap justify-center gap-2 text-[11px] text-slate-400">
+              <span className="rounded-lg bg-slate-100 px-2.5 py-1">5-Policy Comparison</span>
+              <span className="rounded-lg bg-slate-100 px-2.5 py-1">Sample Request Traces</span>
+              <span className="rounded-lg bg-slate-100 px-2.5 py-1">Empirical CDF</span>
+              <span className="rounded-lg bg-slate-100 px-2.5 py-1">Container Lifecycle</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -2704,36 +2633,6 @@ function ExperimentHistory({
   )
 }
 
-function SettingsView() {
-  return (
-    <div>
-      <p className="text-xs font-semibold uppercase tracking-[.18em] text-emerald-600">Preferences</p>
-      <h1 className="mt-2 text-3xl font-semibold tracking-tight">System Settings</h1>
-      <p className="mt-2 text-sm text-slate-500">Configure global simulation defaults and cloud provider parameters.</p>
-
-      <div className="mt-8 max-w-2xl space-y-6">
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="font-semibold text-slate-900">Empirical Cloud Parameters</h2>
-          <div className="mt-4 space-y-3 text-xs text-slate-600">
-            <div>
-              <span className="font-medium text-slate-700">AWS Lambda Pricing:</span> $0.0000166667 / GB-sec
-            </div>
-            <div>
-              <span className="font-medium text-slate-700">Marginal Grid Emissions:</span> 415 g CO₂e / kWh
-            </div>
-            <div>
-              <span className="font-medium text-slate-700">Cold-Start Log-Normal μ:</span> 200 ms
-            </div>
-            <div>
-              <span className="font-medium text-slate-700">PRNG Implementation:</span> Mulberry32 Deterministic Seeded PRNG
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function Dashboard({
   onBack,
   onOpenMethodology,
@@ -2867,6 +2766,8 @@ function Dashboard({
         )
       case 'Settings':
         return <SettingsView />
+      case 'Preferences':
+        return <PreferencesView />
       default:
         return null
     }
@@ -2875,53 +2776,50 @@ function Dashboard({
   return (
     <div className="flex min-h-screen bg-[#f6f8f7] text-slate-950">
       <aside
-        className={`fixed inset-y-0 left-0 z-20 w-64 border-r border-slate-200 bg-white p-5 transition-transform lg:relative lg:translate-x-0 ${
-          mobileOpen ? 'translate-x-0' : '-translate-x-full'
+        className={`fixed inset-y-0 left-0 z-30 w-64 border-r border-slate-200 bg-white p-5 flex flex-col justify-between overflow-y-auto transition-transform lg:static lg:translate-x-0 ${
+          mobileOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'
         }`}
       >
-        <div className="flex items-center justify-between">
-          <button onClick={onBack}>
-            <Logo />
-          </button>
-          <button onClick={() => setMobileOpen(false)} className="lg:hidden">
-            <Menu size={18} />
-          </button>
-        </div>
-        <div className="mt-10 rounded-2xl bg-slate-950 p-4 text-white">
-          <p className="text-[10px] uppercase tracking-[.18em] text-emerald-400">Workspace</p>
-          <p className="mt-2 text-sm font-medium">CloudFlow Research</p>
-          <p className="mt-1 text-xs text-slate-400">Serverless Benchmarking</p>
-        </div>
-        <nav className="mt-8 flex flex-col gap-1">
-          {nav.map(({ label, icon: Icon }) => (
-            <button
-              key={label}
-              onClick={() => {
-                setActive(label)
-                setMobileOpen(false)
-              }}
-              className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition ${
-                active === label
-                  ? 'bg-emerald-50 font-medium text-emerald-700 shadow-sm'
-                  : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
-              }`}
-            >
-              <Icon size={16} />
-              {label}
+        <div>
+          <div className="flex items-center justify-between">
+            <button onClick={onBack}>
+              <Logo />
             </button>
-          ))}
-        </nav>
-        <div className="absolute bottom-5 left-5 right-5 border-t border-slate-100 pt-4 flex flex-col gap-2">
-          <button
-            onClick={() => setActive('Settings')}
-            className="flex items-center gap-3 text-sm text-slate-500 hover:text-slate-900"
-          >
-            <Settings2 size={16} /> Preferences
-          </button>
+            <button onClick={() => setMobileOpen(false)} className="lg:hidden text-slate-500 hover:text-slate-800">
+              <X size={20} />
+            </button>
+          </div>
+          <div className="mt-8 rounded-2xl bg-slate-950 p-4 text-white">
+            <p className="text-[10px] uppercase tracking-[.18em] text-emerald-400">Workspace</p>
+            <p className="mt-2 text-sm font-medium">CloudFlow Research</p>
+            <p className="mt-1 text-xs text-slate-400">Serverless Benchmarking</p>
+          </div>
+          <nav className="mt-6 flex flex-col gap-1">
+            {nav.map(({ label, icon: Icon }) => (
+              <button
+                key={label}
+                onClick={() => {
+                  setActive(label)
+                  setMobileOpen(false)
+                }}
+                className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition ${
+                  active === label
+                    ? 'bg-emerald-50 font-medium text-emerald-700 shadow-sm'
+                    : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+                }`}
+              >
+                <Icon size={16} />
+                {label}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        <div className="mt-8 shrink-0 border-t border-slate-100 pt-4 flex flex-col gap-2">
           {onOpenMethodology && (
             <button
               onClick={onOpenMethodology}
-              className="flex items-center gap-3 text-sm text-slate-500 hover:text-slate-900"
+              className="flex items-center gap-3 text-sm text-slate-500 hover:text-slate-900 transition py-1"
             >
               <BookOpen size={16} /> Methodology
             </button>
@@ -2929,14 +2827,14 @@ function Dashboard({
           {onOpenResearch && (
             <button
               onClick={onOpenResearch}
-              className="flex items-center gap-3 text-sm text-slate-500 hover:text-slate-900"
+              className="flex items-center gap-3 text-sm text-slate-500 hover:text-slate-900 transition py-1"
             >
               <FileText size={16} /> Research Paper
             </button>
           )}
           <button
             onClick={onBack}
-            className="flex items-center gap-3 text-sm text-slate-500 hover:text-slate-900"
+            className="flex items-center gap-3 text-sm text-slate-500 hover:text-slate-900 transition py-1"
           >
             <ChevronLeft size={16} /> Return to Home
           </button>
