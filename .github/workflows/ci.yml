@@ -62,7 +62,7 @@ jobs:
       - name: TypeScript Validation
         run: pnpm typecheck
 
-      - name: Automated Unit & Integration Tests (55 Tests)
+      - name: Automated Unit & Integration Tests (168 Tests)
         run: pnpm test
 
       - name: Production Build Verification

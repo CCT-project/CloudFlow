@@ -15,7 +15,7 @@ const nextConfig = {
     //   'unsafe-eval' is enabled strictly in non-production environments for Turbopack/HMR.
     //   In production, 'unsafe-eval' is omitted to defend against dynamic string evaluation/XSS.
     //   https://va.vercel-scripts.com is allowlisted for optional @vercel/analytics.
-    // - style-src: 'self' 'unsafe-inline' supports Tailwind CSS inline theme tokens, Framer Motion, and UI components.
+    // - style-src: 'self' 'unsafe-inline' supports Tailwind CSS inline theme tokens and UI components.
     // - img-src: 'self' blob: data: supports SVG charting, canvas elements, and jsPDF client blob downloads.
     // - connect-src: 'self' and https://vitals.vercel-insights.com for internal API calls and Web Vitals telemetry.
     // - frame-ancestors: 'none' enforces anti-clickjacking at the CSP boundary.
