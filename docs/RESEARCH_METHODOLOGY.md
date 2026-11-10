@@ -123,7 +123,30 @@ $$d_z = \frac{|\bar{D}|}{s_D}$$
 
 ---
 
-## 6. Scientific Integrity & Experimental Boundaries
+## 6. Automated Headless Benchmarking Kernel & Large-Scale Evaluation
+
+To eliminate synchronous HTTP serverless gateway timeouts (10s on Vercel Hobby, 60s on Pro) when scaling to large request volumes ($1\text{K}, 5\text{K}, 10\text{K},$ and $50\text{K}$ requests per seed across $k \ge 30$ seeds), CloudFlow provides a standalone headless benchmarking kernel (`scripts/research-runner.ts`).
+
+### 6.1 Avoidance of Jensen's Inequality Fallacy (Pooled Quantiles)
+A common methodological error in serverless benchmarking is computing $P_{95}$ per seed repetition and calculating the arithmetic mean of those percentiles. Because percentile functions in queueing systems are non-linear and convex, Jensen's inequality dictates:
+$$\mathbb{E}[P_{95}(X_i)] \ne P_{95}\left(\bigcup_{i=1}^k X_i\right)$$
+Averaging percentiles introduces systematic bias. To compute mathematically defensible tail metrics, the headless CLI concatenates all individual request latency observations across all $k$ seeds into a unified pooled population vector:
+$$L_{\text{pooled}} = [l_1, l_2, \dots, l_{N \times k}]$$
+True population quantiles are computed directly on this pooled vector:
+$$P_q = \text{Quantile}(L_{\text{pooled}}, q), \quad q \in \{50, 90, 95, 99\}$$
+Both the pooled population $P_{95}$ and the sample mean of per-seed $P_{95}$ values are reported for complete transparency.
+
+### 6.2 Provenance Tracking & Reproducibility Manifests
+Every headless benchmark execution automatically generates an empirical audit manifest (`reproducibility-manifest.json`):
+- Git commit hash at execution time.
+- Node.js runtime version and hardware architecture.
+- Full PRNG seed sequence (`seedStart .. seedStart + k - 1`).
+- Exact command-line reproduction string.
+- Progressive file flush mechanism preventing data loss upon process interruption.
+
+---
+
+## 7. Scientific Integrity & Experimental Boundaries
 
 > [!CAUTION]
 > **Simulation Boundary Declaration:**

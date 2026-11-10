@@ -53,6 +53,7 @@ export interface ResearchRunnerConfig {
   candidates?: ServerlessCandidate[]
   quiet?: boolean
   runId?: string
+  abortSignal?: AbortSignal
 }
 
 export interface MetricSummaryRow {
@@ -100,6 +101,7 @@ export interface WorkloadBenchmarkResult {
 export interface ResearchRunnerResult {
   runId: string
   timestamp: string
+  executionStatus: 'completed' | 'interrupted' | 'partial'
   config: ResearchRunnerConfig
   systemMetadata: {
     nodeVersion: string
@@ -107,7 +109,7 @@ export interface ResearchRunnerResult {
     platform: string
     arch: string
   }
-  workloadResults: Record<ArrivalPattern, WorkloadBenchmarkResult>
+  workloadResults: Partial<Record<ArrivalPattern, WorkloadBenchmarkResult>>
   outputPaths: {
     directory: string
     summaryJson: string
@@ -145,9 +147,10 @@ export function getGitCommitHash(): string {
   }
 }
 
-export interface ValidatedRunnerConfig extends Required<Omit<ResearchRunnerConfig, 'seeds'>> {
+export interface ValidatedRunnerConfig extends Required<Omit<ResearchRunnerConfig, 'seeds' | 'abortSignal'>> {
   seeds: number[]
   workloads: ArrivalPattern[]
+  abortSignal?: AbortSignal
 }
 
 /**
@@ -233,6 +236,7 @@ export function validateRunnerConfig(config: ResearchRunnerConfig): ValidatedRun
     candidates,
     quiet,
     runId,
+    abortSignal: config.abortSignal,
   }
 }
 
@@ -347,35 +351,37 @@ export function runWorkloadBenchmark(
 
   // Paired Student's t-tests, Holm-Bonferroni corrections, and Cohen's dz
   const comparisons: PairedComparisonRow[] = []
-  for (const metric of EVALUATED_METRIC_KEYS) {
-    const adaptiveValues = policySamples['CloudFlow adaptive'][metric]
-    const metricComparisons = BASELINE_POLICIES.map((baseline) => {
-      const baselineValues = policySamples[baseline][metric]
-      const paired = calculatePairedTTest(adaptiveValues, baselineValues)
-      return { baseline, paired }
-    })
-
-    const rawPairs = metricComparisons.map((m) => m.paired)
-    const correctedPairs = applyHolmBonferroniCorrection(rawPairs, 0.05)
-
-    metricComparisons.forEach((m, idx) => {
-      const c = correctedPairs[idx]
-      comparisons.push({
-        metric,
-        baselinePolicy: m.baseline,
-        adaptiveMean: c.adaptiveMean,
-        baselineMean: c.baselineMean,
-        meanDifference: c.meanDifference,
-        percentDifference: c.percentDifference,
-        df: c.degreesOfFreedom,
-        tStatistic: c.tStatistic,
-        rawPValue: c.pValue,
-        adjustedPValue: c.adjustedPValue ?? c.pValue,
-        isSignificant: (c.adjustedPValue ?? c.pValue) < 0.05,
-        cohensD: c.cohensDz,
-        effectMagnitude: (c.effectSizeMagnitude.toLowerCase() as any),
+  if (seeds.length >= 2) {
+    for (const metric of EVALUATED_METRIC_KEYS) {
+      const adaptiveValues = policySamples['CloudFlow adaptive'][metric]
+      const metricComparisons = BASELINE_POLICIES.map((baseline) => {
+        const baselineValues = policySamples[baseline][metric]
+        const paired = calculatePairedTTest(adaptiveValues, baselineValues)
+        return { baseline, paired }
       })
-    })
+
+      const rawPairs = metricComparisons.map((m) => m.paired)
+      const correctedPairs = applyHolmBonferroniCorrection(rawPairs, 0.05)
+
+      metricComparisons.forEach((m, idx) => {
+        const c = correctedPairs[idx]
+        comparisons.push({
+          metric,
+          baselinePolicy: m.baseline,
+          adaptiveMean: c.adaptiveMean,
+          baselineMean: c.baselineMean,
+          meanDifference: c.meanDifference,
+          percentDifference: c.percentDifference,
+          df: c.degreesOfFreedom,
+          tStatistic: c.tStatistic,
+          rawPValue: c.pValue,
+          adjustedPValue: c.adjustedPValue ?? c.pValue,
+          isSignificant: (c.adjustedPValue ?? c.pValue) < 0.05,
+          cohensD: c.cohensDz,
+          effectMagnitude: (c.effectSizeMagnitude.toLowerCase() as any),
+        })
+      })
+    }
   }
 
   const executionDurationMs = Date.now() - startTime
@@ -563,141 +569,174 @@ export async function runResearchBenchmark(rawConfig: ResearchRunnerConfig): Pro
     console.log('-'.repeat(78))
   }
 
-  const workloadResults = {} as Record<ArrivalPattern, WorkloadBenchmarkResult>
+  const workloadResults: Partial<Record<ArrivalPattern, WorkloadBenchmarkResult>> = {}
+  let wasInterrupted = false
 
-  for (let wIdx = 0; wIdx < targetWorkloads.length; wIdx++) {
-    const pattern = targetWorkloads[wIdx]
-    if (!config.quiet) {
-      console.log(`\n[Workload ${wIdx + 1}/${targetWorkloads.length}] Running pattern: ${pattern.toUpperCase()}`)
+  const persistArtifacts = (status: 'completed' | 'interrupted' | 'partial'): ResearchRunnerResult => {
+    const finalResult: ResearchRunnerResult = {
+      runId: config.runId,
+      timestamp: new Date().toISOString(),
+      executionStatus: status,
+      config,
+      systemMetadata: {
+        nodeVersion: process.version,
+        gitCommit: getGitCommitHash(),
+        platform: process.platform,
+        arch: process.arch,
+      },
+      workloadResults,
+      outputPaths: {
+        directory: targetDir,
+        summaryJson: join(targetDir, 'benchmark-summary.json'),
+        comparisonCsv: join(targetDir, 'policy-comparison.csv'),
+        reproducibilityManifest: join(targetDir, 'reproducibility-manifest.json'),
+      },
     }
 
-    const wStart = Date.now()
-    const result = runWorkloadBenchmark(
-      pattern,
-      config.seeds,
-      config.requests,
-      config.durationMinutes,
-      config.slaThresholdMs,
-      config.candidates,
-      config.adaptiveWeights,
-      config.maxInstancesPerCandidate,
-      config.quiet,
-      (currentSeed, totalSeeds) => {
-        if (!config.quiet && (currentSeed === 1 || currentSeed % 5 === 0 || currentSeed === totalSeeds)) {
-          const pct = ((currentSeed / totalSeeds) * 100).toFixed(0)
-          const elapsed = ((Date.now() - wStart) / 1000).toFixed(1)
-          process.stdout.write(`\r  Progress: Seed ${currentSeed}/${totalSeeds} (${pct}%) | Elapsed: ${elapsed}s    `)
+    // 1. Export summary JSON
+    writeFileSync(finalResult.outputPaths.summaryJson, JSON.stringify(finalResult, null, 2), 'utf8')
+
+    // 2. Export comparison CSV
+    const csvContent = generateRunnerCSV(finalResult)
+    writeFileSync(finalResult.outputPaths.comparisonCsv, csvContent, 'utf8')
+
+    // 3. Export Reproducibility Manifest
+    const manifest = {
+      manifestVersion: '1.0',
+      title: 'CloudFlow Reproducibility Manifest',
+      runId: config.runId,
+      timestamp: finalResult.timestamp,
+      executionStatus: status,
+      gitCommit: finalResult.systemMetadata.gitCommit,
+      nodeVersion: finalResult.systemMetadata.nodeVersion,
+      hardwarePlatform: `${finalResult.systemMetadata.platform}-${finalResult.systemMetadata.arch}`,
+      experimentalParameters: {
+        workloadPatterns: targetWorkloads,
+        requestsPerSeed: config.requests,
+        seedCount: config.seeds.length,
+        seedSequence: config.seeds,
+        slaLatencyThresholdMs: config.slaThresholdMs,
+        durationMinutes: config.durationMinutes,
+        maxInstancesPerCandidate: config.maxInstancesPerCandidate,
+        adaptiveWeights: config.adaptiveWeights,
+      },
+      candidates: config.candidates.map((c) => ({
+        id: c.id,
+        name: c.name,
+        provider: c.provider,
+        region: c.region,
+        baseLatencyMs: c.baseLatencyMs,
+        coldStartLatencyMs: c.coldStartLatencyMs,
+        costPerMsUSD: c.costPerMsUSD,
+        carbonIntensityGPerKwh: c.carbonIntensityGPerKwh,
+      })),
+      simulationAssumptions: DEFAULT_SIMULATION_ASSUMPTIONS,
+      reproductionCommand: `pnpm research --workload ${config.workload} --requests ${config.requests} --seeds ${config.seeds.length} --seed-start ${config.seedStart} --sla ${config.slaThresholdMs}`,
+      disclaimer: 'Deterministic model-based simulation results calibrated against empirical cloud provider characteristics.',
+    }
+    writeFileSync(finalResult.outputPaths.reproducibilityManifest, JSON.stringify(manifest, null, 2), 'utf8')
+
+    // 4. Optional representative traces CSV
+    if (config.includeTraces) {
+      const tracesPath = join(targetDir, 'sample-traces.csv')
+      finalResult.outputPaths.sampleTracesCsv = tracesPath
+      const traceLines: string[] = []
+      traceLines.push('Workload,RequestId,ArrivalTimeMs,ExecutionDurationMs,SelectedCandidate,WasCold,QueueDelayMs,TotalLatencyMs,ViolatedSLA')
+      for (const [pattern, wRes] of Object.entries(workloadResults)) {
+        if (wRes?.representativeTraces) {
+          for (const t of wRes.representativeTraces) {
+            traceLines.push([
+              pattern,
+              t.requestId,
+              t.arrivalTimeMs.toFixed(2),
+              (t.executionDurationMs ?? 0).toFixed(2),
+              escapeCSVField(t.selectedCandidateName),
+              t.isColdStart ? 'TRUE' : 'FALSE',
+              (t.queueingDelayMs ?? 0).toFixed(2),
+              t.latencyMs.toFixed(2),
+              !t.meetsSLA ? 'TRUE' : 'FALSE',
+            ].join(','))
+          }
         }
       }
-    )
+      writeFileSync(tracesPath, traceLines.join('\n'), 'utf8')
+    }
 
+    return finalResult
+  }
+
+  const sigintHandler = () => {
+    if (wasInterrupted) return
+    wasInterrupted = true
     if (!config.quiet) {
-      const elapsed = ((Date.now() - wStart) / 1000).toFixed(2)
-      console.log(`\n  Done in ${elapsed}s. Evaluated ${result.totalInvocations.toLocaleString()} total policy invocations.`)
-      // Print quick summary table
-      console.log('  ' + '-'.repeat(74))
-      console.log(`  ${'Policy'.padEnd(20)} | ${'Cost ($)'.padEnd(10)} | ${'Carbon (g)'.padEnd(10)} | ${'Avg Lat (ms)'.padEnd(12)} | ${'Pooled P95'.padEnd(12)}`)
-      console.log('  ' + '-'.repeat(74))
-      for (const pol of ALL_POLICIES) {
-        const stats = result.policyStatistics[pol]
-        const cost = `$${stats.metrics.costUSD.mean.toFixed(5)}`
-        const carb = `${stats.metrics.carbonG.mean.toFixed(2)}g`
-        const avgL = `${stats.metrics.averageLatencyMs.mean.toFixed(1)}ms`
-        const p95L = `${(stats.pooledP95LatencyMs ?? stats.metrics.p95LatencyMs.mean).toFixed(1)}ms`
-        console.log(`  ${pol.padEnd(20)} | ${cost.padEnd(10)} | ${carb.padEnd(10)} | ${avgL.padEnd(12)} | ${p95L.padEnd(12)}`)
-      }
-      console.log('  ' + '-'.repeat(74))
+      console.warn('\n⚠️  Execution interrupted by user (SIGINT). Preserving completed results...')
     }
-
-    workloadResults[pattern] = result
+    persistArtifacts('interrupted')
+    process.exit(130)
   }
 
-  const finalResult: ResearchRunnerResult = {
-    runId: config.runId,
-    timestamp: new Date().toISOString(),
-    config,
-    systemMetadata: {
-      nodeVersion: process.version,
-      gitCommit: getGitCommitHash(),
-      platform: process.platform,
-      arch: process.arch,
-    },
-    workloadResults,
-    outputPaths: {
-      directory: targetDir,
-      summaryJson: join(targetDir, 'benchmark-summary.json'),
-      comparisonCsv: join(targetDir, 'policy-comparison.csv'),
-      reproducibilityManifest: join(targetDir, 'reproducibility-manifest.json'),
-    },
-  }
+  process.once('SIGINT', sigintHandler)
+  process.once('SIGTERM', sigintHandler)
 
-  // 1. Export summary JSON
-  writeFileSync(finalResult.outputPaths.summaryJson, JSON.stringify(finalResult, null, 2), 'utf8')
+  try {
+    for (let wIdx = 0; wIdx < targetWorkloads.length; wIdx++) {
+      if (config.abortSignal?.aborted || wasInterrupted) {
+        wasInterrupted = true
+        break
+      }
+      const pattern = targetWorkloads[wIdx]
+      if (!config.quiet) {
+        console.log(`\n[Workload ${wIdx + 1}/${targetWorkloads.length}] Running pattern: ${pattern.toUpperCase()}`)
+      }
 
-  // 2. Export comparison CSV
-  const csvContent = generateRunnerCSV(finalResult)
-  writeFileSync(finalResult.outputPaths.comparisonCsv, csvContent, 'utf8')
-
-  // 3. Export Reproducibility Manifest
-  const manifest = {
-    manifestVersion: '1.0',
-    title: 'CloudFlow Reproducibility Manifest',
-    runId: config.runId,
-    timestamp: finalResult.timestamp,
-    gitCommit: finalResult.systemMetadata.gitCommit,
-    nodeVersion: finalResult.systemMetadata.nodeVersion,
-    hardwarePlatform: `${finalResult.systemMetadata.platform}-${finalResult.systemMetadata.arch}`,
-    experimentalParameters: {
-      workloadPatterns: targetWorkloads,
-      requestsPerSeed: config.requests,
-      seedCount: config.seeds.length,
-      seedSequence: config.seeds,
-      slaLatencyThresholdMs: config.slaThresholdMs,
-      durationMinutes: config.durationMinutes,
-      maxInstancesPerCandidate: config.maxInstancesPerCandidate,
-      adaptiveWeights: config.adaptiveWeights,
-    },
-    candidates: config.candidates.map((c) => ({
-      id: c.id,
-      name: c.name,
-      provider: c.provider,
-      region: c.region,
-      baseLatencyMs: c.baseLatencyMs,
-      coldStartLatencyMs: c.coldStartLatencyMs,
-      costPerMsUSD: c.costPerMsUSD,
-      carbonIntensityGPerKwh: c.carbonIntensityGPerKwh,
-    })),
-    simulationAssumptions: DEFAULT_SIMULATION_ASSUMPTIONS,
-    reproductionCommand: `pnpm research --workload ${config.workload} --requests ${config.requests} --seeds ${config.seeds.length} --seed-start ${config.seedStart} --sla ${config.slaThresholdMs}`,
-    disclaimer: 'Deterministic model-based simulation results calibrated against empirical cloud provider characteristics.',
-  }
-  writeFileSync(finalResult.outputPaths.reproducibilityManifest, JSON.stringify(manifest, null, 2), 'utf8')
-
-  // 4. Optional representative traces CSV
-  if (config.includeTraces) {
-    const tracesPath = join(targetDir, 'sample-traces.csv')
-    finalResult.outputPaths.sampleTracesCsv = tracesPath
-    const traceLines: string[] = []
-    traceLines.push('Workload,RequestId,ArrivalTimeMs,ExecutionDurationMs,SelectedCandidate,WasCold,QueueDelayMs,TotalLatencyMs,ViolatedSLA')
-    for (const [pattern, wRes] of Object.entries(workloadResults)) {
-      if (wRes.representativeTraces) {
-        for (const t of wRes.representativeTraces) {
-          traceLines.push([
-            pattern,
-            t.requestId,
-            t.arrivalTimeMs.toFixed(2),
-            (t.executionDurationMs ?? 0).toFixed(2),
-            escapeCSVField(t.selectedCandidateName),
-            t.isColdStart ? 'TRUE' : 'FALSE',
-            (t.queueingDelayMs ?? 0).toFixed(2),
-            t.latencyMs.toFixed(2),
-            !t.meetsSLA ? 'TRUE' : 'FALSE',
-          ].join(','))
+      const wStart = Date.now()
+      const result = runWorkloadBenchmark(
+        pattern,
+        config.seeds,
+        config.requests,
+        config.durationMinutes,
+        config.slaThresholdMs,
+        config.candidates,
+        config.adaptiveWeights,
+        config.maxInstancesPerCandidate,
+        config.quiet,
+        (currentSeed, totalSeeds) => {
+          if (!config.quiet && (currentSeed === 1 || currentSeed % 5 === 0 || currentSeed === totalSeeds)) {
+            const pct = ((currentSeed / totalSeeds) * 100).toFixed(0)
+            const elapsed = ((Date.now() - wStart) / 1000).toFixed(1)
+            process.stdout.write(`\r  Progress: Seed ${currentSeed}/${totalSeeds} (${pct}%) | Elapsed: ${elapsed}s    `)
+          }
         }
+      )
+
+      if (!config.quiet) {
+        const elapsed = ((Date.now() - wStart) / 1000).toFixed(2)
+        console.log(`\n  Done in ${elapsed}s. Evaluated ${result.totalInvocations.toLocaleString()} total policy invocations.`)
+        // Print quick summary table
+        console.log('  ' + '-'.repeat(74))
+        console.log(`  ${'Policy'.padEnd(20)} | ${'Cost ($)'.padEnd(10)} | ${'Carbon (g)'.padEnd(10)} | ${'Avg Lat (ms)'.padEnd(12)} | ${'Pooled P95'.padEnd(12)}`)
+        console.log('  ' + '-'.repeat(74))
+        for (const pol of ALL_POLICIES) {
+          const stats = result.policyStatistics[pol]
+          const cost = `$${stats.metrics.costUSD.mean.toFixed(5)}`
+          const carb = `${stats.metrics.carbonG.mean.toFixed(2)}g`
+          const avgL = `${stats.metrics.averageLatencyMs.mean.toFixed(1)}ms`
+          const p95L = `${(stats.pooledP95LatencyMs ?? stats.metrics.p95LatencyMs.mean).toFixed(1)}ms`
+          console.log(`  ${pol.padEnd(20)} | ${cost.padEnd(10)} | ${carb.padEnd(10)} | ${avgL.padEnd(12)} | ${p95L.padEnd(12)}`)
+        }
+        console.log('  ' + '-'.repeat(74))
       }
+
+      workloadResults[pattern] = result
+      // Progressively persist after each workload completes to protect research data against crashes
+      persistArtifacts(wIdx === targetWorkloads.length - 1 ? 'completed' : 'partial')
     }
-    writeFileSync(tracesPath, traceLines.join('\n'), 'utf8')
+  } finally {
+    process.removeListener('SIGINT', sigintHandler)
+    process.removeListener('SIGTERM', sigintHandler)
   }
+
+  const finalResult = persistArtifacts(wasInterrupted ? 'interrupted' : 'completed')
 
   if (!config.quiet) {
     console.log('\n' + '='.repeat(78))
@@ -712,6 +751,8 @@ export async function runResearchBenchmark(rawConfig: ResearchRunnerConfig): Pro
     }
     console.log('='.repeat(78) + '\n')
   }
+
+  return finalResult
 
   return finalResult
 }

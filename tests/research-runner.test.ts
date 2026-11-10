@@ -244,5 +244,39 @@ describe('CloudFlow Headless Research CLI Runner', () => {
       const traceCsvContent = readFileSync(result.outputPaths.sampleTracesCsv!, 'utf8')
       assert.ok(traceCsvContent.startsWith('Workload,RequestId,ArrivalTimeMs,ExecutionDurationMs,SelectedCandidate,WasCold,QueueDelayMs,TotalLatencyMs,ViolatedSLA'))
     })
+
+    it('handles single-seed execution gracefully without failing t-tests (k < 2)', () => {
+      const result = runWorkloadBenchmark('Steady', [999], 50, 5, 250)
+      assert.equal(result.seedCount, 1)
+      assert.equal(result.comparisons.length, 0, 'No paired comparisons can be computed for k < 2')
+      for (const policy of ALL_POLICIES) {
+        assert.ok(result.policyStatistics[policy].metrics.averageLatencyMs.mean > 0)
+      }
+    })
+
+    it('gracefully handles interrupted runs and preserves completed workload artifacts', async () => {
+      const abortController = new AbortController()
+      const interruptedDir = join(testOutputDir, 'interrupted-run')
+
+      // Trigger abort immediately
+      abortController.abort()
+
+      const result = await runResearchBenchmark({
+        workload: 'all',
+        requests: 50,
+        seeds: 2,
+        outputDir: interruptedDir,
+        runId: 'aborted-exp',
+        quiet: true,
+        abortSignal: abortController.signal,
+      })
+
+      assert.equal(result.executionStatus, 'interrupted')
+      assert.ok(existsSync(result.outputPaths.summaryJson), 'Summary JSON should exist even on abort')
+      assert.ok(existsSync(result.outputPaths.reproducibilityManifest), 'Manifest should exist even on abort')
+
+      const manifestContent = JSON.parse(readFileSync(result.outputPaths.reproducibilityManifest, 'utf8'))
+      assert.equal(manifestContent.executionStatus, 'interrupted')
+    })
   })
 })
